@@ -177,11 +177,24 @@ function Test-BrowserData {
             if ((Test-Path -LiteralPath (Join-Path $pf.FullName 'Network\Cookies')) -or (Test-Path -LiteralPath (Join-Path $pf.FullName 'Cookies'))) { $cook++ }
             if (Test-Path -LiteralPath (Join-Path $pf.FullName 'Login Data')) { $pw++ }
         }
+        # ブラウザーへのサインイン（Local State の一覧にアカウント名が残る）と、拡張機能
+        $signed = 0; $ext = 0
+        try {
+            $ls = Get-Content -LiteralPath (Join-Path $b.Root 'Local State') -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+            foreach ($pp in $ls.profile.info_cache.PSObject.Properties) { if ($pp.Value.user_name) { $signed++ } }
+        } catch { }
+        foreach ($pf in $profiles) {
+            $ed = Join-Path $pf.FullName 'Extensions'
+            if (Test-Path -LiteralPath $ed) { $ext += @(Get-ChildItem -LiteralPath $ed -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Temp' }).Count }
+        }
         $parts = @(('お気に入り {0} 件' -f $marks))
+        if ($signed) { $parts += ('ブラウザーにサインイン {0} 件' -f $signed) }
+        if ($profiles.Count -gt 1) { $parts += ('プロファイル {0} 個' -f $profiles.Count) }
+        if ($ext) { $parts += ('拡張機能 {0} 個' -f $ext) }
         if ($hist) { $parts += '履歴あり' }
         if ($cook) { $parts += 'Cookie あり' }
         if ($pw) { $parts += 'パスワード保存の記録あり' }
-        $state = 'OK'; if ($marks -gt 0 -or $hist -or $cook -or $pw) { $state = 'NG' }
+        $state = 'OK'; if ($marks -gt 0 -or $hist -or $cook -or $pw -or $signed -or $profiles.Count -gt 1) { $state = 'NG' }
         $rows += New-Row $id $name $state ($parts -join '・') 'なし' ('プロファイル ' + $profiles.Count + ' 個。ブラウザーを一度開くと空のファイルができるため、［履歴を消す］のあとに開くと「違う」になります。')
     }
     return $rows

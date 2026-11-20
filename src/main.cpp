@@ -39,7 +39,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.13.2";
+const wchar_t kVersion[] = L"0.15.0";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -882,9 +882,14 @@ void StartClean(bool atExit = false) {
         L"・日本語入力（IME）の学習とユーザー辞書（登録した単語も消えます）\n"
         L"・ダウンロード フォルダーの中身、デスクトップのファイル（ショートカット以外）\n"
         L"・ごみ箱\n"
-        L"・Edge・Chrome のお気に入り・履歴・Cookie・保存されたパスワード（ブラウザーは閉じます。開いているタブは失われます）\n\n"
-        L"残すもの：このアプリが入っているフォルダー、OneDrive と同期しているフォルダー、クイック アクセスのピン留め\n\n"
-        L"Word・Excel・PowerPoint・メモ帳は、閉じてから進めてください。\n"
+        L"・Edge・Chrome を初めて開いたときの状態に（サインイン・お気に入り・履歴・Cookie・パスワード・拡張機能。開いているタブは失われます）\n"
+        L"・前の受講生のサインイン：Windows に追加されたアカウント、Office、Adobe Creative Cloud、保存されたログイン情報\n"
+        L"・Zoom・LINE・ChatGPT・Claude・Firefox など、ほかのアプリやブラウザーのデータ（ログインと設定が消えます）\n"
+        L"・受け取った授業ファイル\n\n"
+        L"残すもの：このアプリが入っているフォルダー、OneDrive と同期しているフォルダー、クイック アクセスのピン留め、"
+        L"ネットワーク共有・プリンター用の資格情報\n\n"
+        L"Word・Excel・PowerPoint・メモ帳・Adobe のアプリは、閉じてから進めてください。\n"
+        L"※ 開発用の PC では実行しないでください（git や開発ツールのログインも消えます）。\n"
         L"管理者の確認が出たら「はい」を押してください。\n\n"
         L"消せないものがあっても、消せるものは消し、消せなかったものだけを最後にお知らせします。\n\n"
         L"消しますか？";
@@ -1327,7 +1332,7 @@ void StartOneClick() {
     if (removeOffice) { ask += L"　・Office：削除（元に戻せません）\n"; anyApp = true; }
     if (removeAdobe) { ask += L"　・Adobe CC：削除（元に戻せません）\n"; anyApp = true; }
     if (!anyApp) ask += L"　・（なし）\n";
-    ask += L"3. 前の受講生の履歴を消す（最近使ったファイル・ダウンロード・IME・Edge と Chrome など。元に戻せません。ブラウザーは閉じます）\n\n";
+    ask += L"3. 前の受講生の履歴とサインインを消す（最近使ったファイル・ダウンロード・IME・ブラウザー・Office や Adobe のサインインなど。元に戻せません）\n\n";
     ask += L"Word・Excel・PowerPoint・メモ帳は閉じてから進めてください。\n\n始めますか？";
     UINT style = (removeOffice || removeAdobe) ? (MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) : (MB_YESNO | MB_ICONQUESTION);
     if (MessageBoxW(g.hwnd, ask.c_str(), kAppName, style) != IDYES) return;
@@ -2309,7 +2314,7 @@ bool ConfirmCleanOnExit() {
     c.pszMainIcon = TD_INFORMATION_ICON;
     c.pszMainInstruction = L"作業でできた履歴を削除します";
     c.pszContent =
-        L"最近使ったファイル、ダウンロード、Office・メモ帳・IME の履歴、Edge・Chrome のお気に入り・履歴・Cookie などを消してから閉じます。"
+        L"最近使ったファイル、ダウンロード、Office・メモ帳・IME の履歴、ブラウザー、Office・Adobe などのサインインを消してから閉じます。"
         L"Edge・Chrome は閉じます。このアプリが入っているフォルダーは残します。";
     c.cButtons = 2;
     c.pButtons = buttons;
@@ -2400,6 +2405,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     StartOneClick();
                     return 0;
                 case IDC_SHARE:
+                    share::SetProfilePath(SelectedProfilePath());
                     share::OpenServerWindow(hwnd);
                     return 0;
                 case IDC_CLEAN:

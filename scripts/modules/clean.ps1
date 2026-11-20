@@ -281,15 +281,29 @@ function Stop-Browser {
 function Clear-BrowserData {
     param($Prof)
     $withPw = [bool](Get-Pref $Prof 'browserClearPasswords' $true)
+    # 初めて開いたときの状態に戻す（User Data ごと）：ブラウザーへのサインイン・受講生が足したプロファイル・拡張機能も消える
+    $fullReset = [bool](Get-Pref $Prof 'browserFullReset' $true)
     $names = @($script:BrowserBaseItems)
     if ($withPw) { $names += $script:BrowserPasswordItems }
     $rows = @()
     foreach ($b in Get-BrowserList) {
         $id = 'browser-' + $b.Id
         $label = $b.Name + ' のお気に入り・履歴・Cookie'
+        if ($fullReset) { $label = $b.Name + ' のサインイン・お気に入り・履歴・拡張機能' }
         $profiles = Get-BrowserProfiles $b.Root
-        if ($profiles.Count -eq 0) { $rows += New-Row $id $label 'SKIP' '使った記録なし' 'なし' ''; continue }
+        if ($profiles.Count -eq 0 -and -not (Test-Path -LiteralPath $b.Root)) { $rows += New-Row $id $label 'SKIP' '使った記録なし' 'なし' ''; continue }
         Stop-Browser $b.Process
+        if ($fullReset) {
+            $items = @(Get-ChildItem -LiteralPath $b.Root -Force -ErrorAction SilentlyContinue)
+            $failed = Remove-Items $items
+            if ($failed -gt 0) {
+                Stop-Browser $b.Process   # Edge は閉じてもすぐ裏で起動し直すことがある
+                $failed = Remove-Items @($items | Where-Object { Test-Path -LiteralPath $_.FullName })
+            }
+            $note = ('プロファイル {0} 個。ブラウザーを閉じ、初めて開いたときの状態に戻しました（サインイン・拡張機能・保存されたパスワードも消えています）。次に開くと最初の設定の画面が出ます。' -f $profiles.Count)
+            $rows += Format-CleanResult $id $label $items.Count $failed $note
+            continue
+        }
         $items = @()
         foreach ($pf in $profiles) {
             foreach ($n in $names) {
@@ -341,6 +355,11 @@ function Invoke-CleanAll {
         @('Clear-DesktopFiles',   'デスクトップのファイル'),
         @('Clear-UserRecycleBin', 'ごみ箱'),
         @('Clear-BrowserData',    'Edge・Chrome のお気に入り・履歴・Cookie'),
+        @('Clear-WamAccounts',    'Windows に追加されたアカウント'),
+        @('Clear-OfficeSignIn',   'Office のサインイン'),
+        @('Clear-AdobeSignIn',    'Adobe Creative Cloud のサインイン'),
+        @('Clear-StoredCredentials', '保存されたログイン情報'),
+        @('Clear-SignInApps',     'ほかのアプリ・ブラウザーのログイン'),
         @('Clear-ClassFiles',     '受け取った授業ファイル')
     )
     foreach ($s in $steps) {

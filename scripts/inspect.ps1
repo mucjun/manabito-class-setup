@@ -20,7 +20,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'apps', 'system')) {
+foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'apps', 'system', 'signout')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 
@@ -64,6 +64,12 @@ $checks = @(
     @('前の受講生の痕跡',   'Test-RecycleBin',     'ごみ箱'),
     @('前の受講生の痕跡',   'Test-BrowserData',    'Edge・Chrome のお気に入り・履歴・Cookie'),
     @('前の受講生の痕跡',   'Test-ClassFiles',     '受け取った授業ファイル'),
+    @('前の受講生のサインイン', 'Test-WamAccounts',      'Windows に追加されたアカウント'),
+    @('前の受講生のサインイン', 'Test-OfficeSignIn',     'Office のサインイン'),
+    @('前の受講生のサインイン', 'Test-AdobeSignIn',      'Adobe Creative Cloud のサインイン'),
+    @('前の受講生のサインイン', 'Test-StoredCredentials', '保存されたログイン情報'),
+    @('前の受講生のサインイン', 'Test-SignInApps',       'ほかのアプリ・ブラウザーのログイン'),
+    @('前の受講生のサインイン', 'Test-UserInstalledApps', 'この利用者が入れたアプリ'),
     @('アプリ',             'Test-Office',         'Microsoft 365（Office）'),
     @('アプリ',             'Test-AdobeCC',        'Adobe Creative Cloud デスクトップアプリ'),
     @('アプリ',             'Test-OwnApps',        '独自アプリ'),

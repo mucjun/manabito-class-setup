@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($LogFile) { try { Start-Transcript -LiteralPath $LogFile -Force | Out-Null } catch { } }
 
-foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'set', 'clean', 'deploy')) {
+foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'set', 'clean', 'signout', 'deploy')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 $script:DeployStatusFile = $StatusFile

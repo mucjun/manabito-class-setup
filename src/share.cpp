@@ -284,6 +284,27 @@ std::wstring g_passcode;
 std::map<unsigned long, ClientInfo> g_clients;  // 接続の番号ごと
 unsigned long g_nextClient = 1;
 std::map<std::wstring, std::pair<int, DWORD>> g_fails;  // IP ごとの合言葉の間違い（回数、最後の時刻）
+// インストール元（合言葉なしで配る大きなもの）：0 = Office、1 = Adobe Creative Cloud（ランチャー）
+struct Package {
+    const wchar_t* label;   // 画面の名前
+    const wchar_t* folder;  // %LOCALAPPDATA%\ManabitoClassSetup\ の下の置き場所
+    const wchar_t* top;     // 置き場所の中の、配るフォルダー（相対パスの先頭）
+    const wchar_t* script;  // 用意する部品
+    const char* tag;        // UDP の答えの名前
+    const char* listCmd;    // 一覧を求める命令
+    const char* getCmd;     // 中身を求める命令
+    std::vector<Entry> entries;
+    std::wstring version;
+    unsigned long long bytes = 0;
+    HANDLE prep = nullptr;  // 用意しているときの PowerShell
+    std::wstring statusFile, text;
+};
+Package g_pkgs[2] = {
+    {L"Office", L"OfficeSource", L"Office", L"office_source.ps1", "office", "OFFICE", "OGET", {}, L"", 0, nullptr, L"", L""},
+    {L"Creative Cloud（ランチャー）", L"AdobeSource", L"Adobe", L"adobe_source.ps1", "adobe", "ADOBE", "AGET", {}, L"", 0, nullptr, L"", L""},
+};
+const int kPkgCount = 2;
+std::wstring g_profilePath;
 
 unsigned RandomU32() {
     unsigned v = 0;
@@ -361,6 +382,7 @@ DWORD WINAPI DiscoverThread(LPVOID) {
             auto f = SplitBar(msg);
             if (f.size() < 6) continue;
             if (f[1] == self) continue;  // 自分自身
+            if (atoi(f[4].c_str()) <= 0) continue;  // 授業ファイルを配っていない（Office のインストール元だけ）
             unsigned session = static_cast<unsigned>(strtoul(f[3].c_str(), nullptr, 10));
             {
                 Lock l(&g_cs);
@@ -481,6 +503,58 @@ std::wstring NameForDrop(const std::wstring& path) {
     return CleanName(s == std::wstring::npos ? p : p.substr(s + 1));
 }
 
+std::wstring PkgDir(int k) { return AppDataDir() + L"\\" + g_pkgs[k].folder; }
+
+// 版の名前：Office は Office\Data\<版>\ のフォルダー名、Adobe は ZIP の名前（ACCCx6_11_0_478_6.zip → 6.11.0.478.6）
+std::wstring FindPkgVersion(int k, const std::wstring& top) {
+    std::wstring ver;
+    WIN32_FIND_DATAW fd{};
+    std::wstring pattern = (k == 0) ? top + L"\\Data\\*" : top + L"\\ACCCx*.zip";
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return ver;
+    do {
+        std::wstring n = fd.cFileName;
+        if (k == 0) {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && n.size() > 6 && iswdigit(n[0]) && std::count(n.begin(), n.end(), L'.') == 3 && n > ver)
+                ver = n;
+        } else if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::wstring v = n.substr(5, n.size() - 5 - 4);  // "ACCCx" と ".zip" を除く
+            std::replace(v.begin(), v.end(), L'_', L'.');
+            if (!v.empty() && iswdigit(v[0]) && v > ver) ver = v;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ver;
+}
+
+// インストール元を調べ直す（呼ぶ側が g_cs を持たない）
+void ScanPackage(int k) {
+    std::vector<Entry> list;
+    unsigned long long bytes = 0;
+    int files = 0;
+    std::wstring top = PkgDir(k) + L"\\" + g_pkgs[k].top;
+    std::wstring ver;
+    if (GetFileAttributesW(top.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        Entry t;
+        t.rel = g_pkgs[k].top;
+        t.full = top;
+        t.dir = true;
+        list.push_back(t);
+        Walk(top, g_pkgs[k].top, list, bytes, files);
+        ver = FindPkgVersion(k, top);
+    }
+    Lock l(&g_cs);
+    if (ver.empty() || files == 0) {
+        g_pkgs[k].entries.clear();
+        g_pkgs[k].version.clear();
+        g_pkgs[k].bytes = 0;
+    } else {
+        g_pkgs[k].entries = list;
+        g_pkgs[k].version = ver;
+        g_pkgs[k].bytes = bytes;
+    }
+}
+
 // ---------------------------------------------------------------- 配布する側：通信
 
 DWORD WINAPI UdpServerThread(LPVOID) {
@@ -500,9 +574,13 @@ DWORD WINAPI UdpServerThread(LPVOID) {
         std::string answer;
         {
             Lock l(&g_cs);
-            if (g_totalFiles == 0) continue;  // 配るものが無いときは返事をしない
+            bool anyPkg = false;
+            for (int pk = 0; pk < kPkgCount; ++pk) anyPkg = anyPkg || !g_pkgs[pk].version.empty();
+            if (g_totalFiles == 0 && !anyPkg) continue;  // 配るものが無いときは返事をしない
             answer = std::string(kAnswerHead) + self + "|" + std::to_string(kTcpPort) + "|" + std::to_string(g_session) + "|" +
                      std::to_string(g_totalFiles) + "|" + std::to_string(g_totalBytes);
+            for (int pk = 0; pk < kPkgCount; ++pk)  // |office=版|バイト|adobe=版|バイト
+                answer += std::string("|") + g_pkgs[pk].tag + "=" + ToUtf8(g_pkgs[pk].version) + "|" + std::to_string(g_pkgs[pk].bytes);
         }
         sendto(g_udpServer, answer.data(), static_cast<int>(answer.size()), 0, reinterpret_cast<sockaddr*>(&from), fl);
     }
@@ -514,6 +592,77 @@ struct ClientJob {
     std::wstring ip;
 };
 
+// 1 つのファイルを送る（DATA|大きさ のあと中身）。つながりが切れたら false
+bool SendFileTo(Conn& c, const std::wstring& full, unsigned long id) {
+    HANDLE h = CreateFileW(full.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return c.SendLine("ERR|配布する側でファイルを開けませんでした（USB メモリを抜いた、など）。");
+    LARGE_INTEGER sz{};
+    GetFileSizeEx(h, &sz);
+    if (!c.SendLine("DATA|" + std::to_string(sz.QuadPart))) {
+        CloseHandle(h);
+        return false;
+    }
+    std::vector<char> buf(256 * 1024);
+    unsigned long long left = static_cast<unsigned long long>(sz.QuadPart);
+    bool good = true;
+    while (left > 0) {
+        DWORD want = static_cast<DWORD>(std::min<unsigned long long>(left, buf.size())), got = 0;
+        if (!ReadFile(h, buf.data(), want, &got, nullptr) || got == 0) { good = false; break; }
+        if (!c.SendAll(buf.data(), got)) { good = false; break; }
+        left -= got;
+        Lock l(&g_cs);
+        g_clients[id].sent += got;
+        g_clients[id].lastTick = GetTickCount();
+    }
+    CloseHandle(h);
+    return good;
+}
+
+// インストール元の受け渡し（合言葉なし。first は OFFICE|PC名 ／ ADOBE|PC名 の行）
+void ServePackage(Conn& c, const std::wstring& ip, const std::vector<std::string>& first, int k) {
+    std::vector<Entry> entries;
+    unsigned long id;
+    const std::wstring tagName = std::wstring(L"（") + g_pkgs[k].label + L"）";
+    const std::wstring doneText = std::wstring(g_pkgs[k].label) + L" を受け取りました";
+    {
+        Lock l(&g_cs);
+        entries = g_pkgs[k].entries;
+        id = g_nextClient++;
+        ClientInfo ci;
+        ci.name = (first.size() >= 2 ? FromUtf8(first[1]) : std::wstring(L"（不明）")) + tagName;
+        ci.ip = ip;
+        ci.state = entries.empty() ? L"インストール元なし" : L"受け取り中";
+        ci.total = g_pkgs[k].bytes;
+        ci.lastTick = GetTickCount();
+        g_clients[id] = ci;
+    }
+    if (entries.empty()) {
+        c.SendLine("ERR|この配布サーバーには、そのインストール元がありません。");
+        return;
+    }
+    unsigned long long total = 0;
+    for (const auto& e : entries) total += e.size;
+    std::string out = "COUNT|" + std::to_string(entries.size()) + "|" + std::to_string(total) + "\n";
+    for (const auto& e : entries) out += (e.dir ? "D|" : "F|") + ToUtf8(e.rel) + "|" + std::to_string(e.size) + "\n";
+    if (!c.SendAll(out.data(), out.size())) return;
+    std::string line;
+    while (!g_serverStop && c.ReadLine(line)) {
+        auto f = SplitBar(line);
+        if (f[0] == g_pkgs[k].getCmd && f.size() >= 2) {
+            size_t i = static_cast<size_t>(strtoul(f[1].c_str(), nullptr, 10));
+            if (i >= entries.size() || entries[i].dir) { c.SendLine("ERR|番号が違います。"); continue; }
+            if (!SendFileTo(c, entries[i].full, id)) break;
+        } else if (f[0] == "DONE") {
+            Lock l(&g_cs);
+            g_clients[id].state = doneText;
+            g_clients[id].sent = g_clients[id].total;
+            return;
+        }
+    }
+    Lock l(&g_cs);
+    if (g_clients[id].state != doneText) g_clients[id].state = L"途中で切れました";
+}
+
 DWORD WINAPI ClientServeThread(LPVOID param) {
     ClientJob* job = static_cast<ClientJob*>(param);
     Conn c;
@@ -524,9 +673,16 @@ DWORD WINAPI ClientServeThread(LPVOID param) {
     setsockopt(c.s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tmo), sizeof(tmo));
     unsigned long id = 0;
     std::string line;
-    // 合言葉
+    // 合言葉（Office のインストール元は合言葉なし）
     if (!c.ReadLine(line)) { c.Close(); return 0; }
     auto f = SplitBar(line);
+    for (int k = 0; k < kPkgCount; ++k) {
+        if (f[0] == g_pkgs[k].listCmd) {
+            ServePackage(c, ip, f, k);
+            c.Close();
+            return 0;
+        }
+    }
     bool ok = false;
     std::wstring name = L"（不明）";
     {
@@ -583,26 +739,7 @@ DWORD WINAPI ClientServeThread(LPVOID param) {
         } else if (f[0] == "GET" && f.size() >= 2) {
             size_t i = static_cast<size_t>(strtoul(f[1].c_str(), nullptr, 10));
             if (i >= entries.size() || entries[i].dir) { c.SendLine("ERR|番号が違います。"); continue; }
-            HANDLE h = CreateFileW(entries[i].full.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                   FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-            if (h == INVALID_HANDLE_VALUE) { c.SendLine("ERR|配布する側でファイルを開けませんでした（USB メモリを抜いた、など）。"); continue; }
-            LARGE_INTEGER sz{};
-            GetFileSizeEx(h, &sz);
-            if (!c.SendLine("DATA|" + std::to_string(sz.QuadPart))) { CloseHandle(h); break; }
-            std::vector<char> buf(256 * 1024);
-            unsigned long long left = static_cast<unsigned long long>(sz.QuadPart);
-            bool good = true;
-            while (left > 0) {
-                DWORD want = static_cast<DWORD>(std::min<unsigned long long>(left, buf.size())), got = 0;
-                if (!ReadFile(h, buf.data(), want, &got, nullptr) || got == 0) { good = false; break; }
-                if (!c.SendAll(buf.data(), got)) { good = false; break; }
-                left -= got;
-                Lock l(&g_cs);
-                g_clients[id].sent += got;
-                g_clients[id].lastTick = GetTickCount();
-            }
-            CloseHandle(h);
-            if (!good) break;  // 途中で切れたら、受け取る側もつながりをやめる
+            if (!SendFileTo(c, entries[i].full, id)) break;  // 途中で切れたら、受け取る側もつながりをやめる
         } else if (f[0] == "DONE") {
             Lock l(&g_cs);
             int failed = f.size() >= 3 ? atoi(f[2].c_str()) : 0;
@@ -781,6 +918,8 @@ enum : int {
     IDS_CLIENTS,
     IDS_STOP,
     IDS_NETWORK,
+    IDS_OFFICE,  // ［Office のインストール元を用意する］
+    IDS_ADOBE,   // ［Creative Cloud を用意する］（IDS_OFFICE + 1）
 };
 const UINT_PTR kServerTimer = 11;
 HFONT g_sfont = nullptr, g_sbig = nullptr, g_sbold = nullptr;
@@ -852,6 +991,106 @@ void AddDrops(HWND hwnd, HDROP drop) {
     RefreshSourceList(hwnd);
 }
 
+// ---- インストール元を用意する（scripts\office_source.ps1 ／ adobe_source.ps1 を裏で動かす）
+
+const wchar_t* kPrepAsk[2] = {
+    L"Office のインストール元（約 3.4 GB）を、この PC にインターネットから一度だけダウンロードします。\n"
+    L"用意できると、この窓を開いている間、ほかの PC の「時間のかかる準備」「まとめて実行」が、Office をここから受け取ります。\n\n"
+    L"有線 LAN でつないでおくと速く配れます。始めますか？",
+    L"Adobe Creative Cloud デスクトップアプリ（ランチャー）のインストーラーを、Adobe の公式ページにある直接ダウンロードの ZIP から、"
+    L"この PC に一度だけダウンロードします。\n"
+    L"用意できると、この窓を開いている間、ほかの PC の「時間のかかる準備」「まとめて実行」が、ランチャーをここから受け取ります。\n\n"
+    L"Photoshop などのアプリ本体は、受講生がサインインしたあとに各 PC が Adobe から直接ダウンロードします（配れません）。始めますか？",
+};
+
+void StartPrep(HWND hwnd, int k) {
+    Package& p = g_pkgs[k];
+    if (p.prep) return;
+    wchar_t exe[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH * 2);
+    std::wstring dir(exe, n);
+    dir = dir.substr(0, dir.find_last_of(L'\\'));
+    std::wstring script = dir + L"\\scripts\\" + p.script;
+    if (GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxW(hwnd, (L"用意する部品が見つかりません：" + script).c_str(), kAppName, MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (MessageBoxW(hwnd, kPrepAsk[k], kAppName, MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    MakeDirs(AppDataDir());
+    p.statusFile = AppDataDir() + L"\\" + p.folder + L"_status.txt";
+    DeleteFileW(p.statusFile.c_str());
+    wchar_t sys[MAX_PATH];
+    UINT sn = GetSystemDirectoryW(sys, MAX_PATH);
+    std::wstring ps = std::wstring(sn ? sys : L"C:\\Windows\\System32") + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
+    std::wstring cmd = L"\"" + ps + L"\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + L"\" -OutDir \"" +
+                       PkgDir(k) + L"\" -StatusFile \"" + p.statusFile + L"\" -LogFile \"" + AppDataDir() + L"\\" + p.folder + L"_log.txt\"";
+    if (!g_profilePath.empty()) cmd += L" -ProfilePath \"" + g_profilePath + L"\"";
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        MessageBoxW(hwnd, L"用意を始められませんでした。", kAppName, MB_OK | MB_ICONWARNING);
+        return;
+    }
+    CloseHandle(pi.hThread);
+    p.prep = pi.hProcess;
+    p.text = std::wstring(p.label) + L" のインストール元：入手の準備をしています…";
+    EnableWindow(GetDlgItem(hwnd, IDS_OFFICE + k), FALSE);
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+std::wstring PkgReadyText(int k) {
+    Lock l(&g_cs);
+    const Package& p = g_pkgs[k];
+    if (p.version.empty()) return std::wstring(p.label) + L" のインストール元：まだ用意していません（用意すると、ほかの PC はここから受け取れます）";
+    return std::wstring(p.label) + L" のインストール元：" + p.version + L"（" + FormatBytes(p.bytes) + L"）を配っています（合言葉なし）";
+}
+
+// 用意の進み具合を読む（タイマーから）
+void PollPrep(HWND hwnd, int k) {
+    Package& p = g_pkgs[k];
+    if (!p.prep) return;
+    std::string bytes;
+    HANDLE h = CreateFileW(p.statusFile.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        char buf[1024];
+        DWORD n = 0;
+        ReadFile(h, buf, sizeof(buf), &n, nullptr);
+        CloseHandle(h);
+        bytes.assign(buf, n);
+    }
+    auto f = SplitBar(bytes);
+    bool ended = WaitForSingleObject(p.prep, 0) == WAIT_OBJECT_0;
+    std::wstring text = p.text;
+    if (f[0] == "download" && f.size() >= 3) {
+        unsigned long long got = _strtoui64(f[1].c_str(), nullptr, 10), exp = _strtoui64(f[2].c_str(), nullptr, 10);
+        text = std::wstring(p.label) + L" のインストール元を用意しています… " + FormatBytes(got) + (exp ? L" / 約 " + FormatBytes(exp) : std::wstring());
+    } else if (f[0] == "check") {
+        text = std::wstring(p.label) + L" のインストール元：電子署名を確かめています…";
+    }
+    if (ended) {
+        CloseHandle(p.prep);
+        p.prep = nullptr;
+        EnableWindow(GetDlgItem(hwnd, IDS_OFFICE + k), TRUE);
+        ScanPackage(k);
+        if (f[0] == "done") {
+            text = PkgReadyText(k);
+        } else {
+            std::wstring why = (f[0] == "fail" && f.size() >= 2) ? FromUtf8(f[1]) : std::wstring(L"途中で終わりました。");
+            text = std::wstring(p.label) + L" のインストール元を用意できませんでした：" + why;
+            MessageBoxW(hwnd, text.c_str(), kAppName, MB_OK | MB_ICONWARNING);
+        }
+    }
+    if (text != p.text) {
+        p.text = text;
+        InvalidateRect(hwnd, nullptr, TRUE);
+    }
+}
+
 void LayoutServer(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -861,13 +1100,15 @@ void LayoutServer(HWND hwnd) {
     int y = S(110) + (g_serverWarn.empty() ? 0 : S(34));
     MoveWindow(GetDlgItem(hwnd, IDS_NETWORK), W - m - S(200), S(70), S(200), S(30), TRUE);
     ShowWindow(GetDlgItem(hwnd, IDS_NETWORK), g_serverWarn.empty() ? SW_HIDE : SW_SHOW);
-    int listH = (H - y - S(250));
+    int listH = (H - y - S(326));
     if (listH < S(80)) listH = S(80);
     MoveWindow(GetDlgItem(hwnd, IDS_SOURCES), m, y + S(22), W - 2 * m, listH, TRUE);
     int by = y + S(22) + listH + S(6);
     MoveWindow(GetDlgItem(hwnd, IDS_REMOVE), m, by, S(160), S(30), TRUE);
     MoveWindow(GetDlgItem(hwnd, IDS_CLEAR), m + S(170), by, S(120), S(30), TRUE);
-    int cy = by + S(64);
+    MoveWindow(GetDlgItem(hwnd, IDS_OFFICE), m, by + S(40), S(250), S(30), TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDS_ADOBE), m, by + S(76), S(250), S(30), TRUE);
+    int cy = by + S(140);
     MoveWindow(GetDlgItem(hwnd, IDS_CLIENTS), m, cy, W - 2 * m, H - cy - S(56), TRUE);
     MoveWindow(GetDlgItem(hwnd, IDS_STOP), W - m - S(200), H - S(44), S(200), S(32), TRUE);
     HWND lv = GetDlgItem(hwnd, IDS_CLIENTS);
@@ -957,7 +1198,13 @@ void PaintServer(HWND hwnd, HDC dc) {
     MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&lr), 2);
     RECT r5{m + S(310), lr.bottom + S(12), rc.right - m, lr.bottom + S(32)};
     DrawTextW(dc, summary.c_str(), -1, &r5, DT_SINGLELINE | DT_LEFT | DT_END_ELLIPSIS);
-    RECT r6{m, lr.bottom + S(46), rc.right - m, lr.bottom + S(66)};
+    for (int k = 0; k < kPkgCount; ++k) {
+        SetTextColor(dc, g_pkgs[k].prep ? RGB(0x2D, 0x5B, 0x8A) : RGB(0x7A, 0x72, 0x68));
+        RECT ro{m + S(262), lr.bottom + S(46 + 36 * k), rc.right - m, lr.bottom + S(76 + 36 * k)};
+        DrawTextW(dc, g_pkgs[k].text.c_str(), -1, &ro, DT_WORDBREAK | DT_LEFT | DT_END_ELLIPSIS);
+    }
+    SetTextColor(dc, RGB(0x33, 0x2E, 0x29));
+    RECT r6{m, lr.bottom + S(122), rc.right - m, lr.bottom + S(142)};
     DrawTextW(dc, L"受け取った PC", -1, &r6, DT_SINGLELINE | DT_LEFT);
     SelectObject(dc, old);
 }
@@ -987,6 +1234,10 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             CreateWindowExW(0, WC_BUTTONW, L"配布をやめて閉じる", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_STOP)), g_inst, nullptr);
+            CreateWindowExW(0, WC_BUTTONW, L"Office のインストール元を用意する", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_OFFICE)), g_inst, nullptr);
+            CreateWindowExW(0, WC_BUTTONW, L"Creative Cloud（ランチャー）を用意する", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_ADOBE)), g_inst, nullptr);
             CreateWindowExW(0, WC_BUTTONW, L"プライベートに切り替える", WS_CHILD | WS_TABSTOP, 0, 0, 10, 10, hwnd,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_NETWORK)), g_inst, nullptr);
             SetFontAll(hwnd, g_sfont);
@@ -1010,7 +1261,10 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             AddDrops(hwnd, reinterpret_cast<HDROP>(wp));
             return 0;
         case WM_TIMER:
-            if (wp == kServerTimer) RefreshClients(hwnd);
+            if (wp == kServerTimer) {
+                RefreshClients(hwnd);
+                for (int k = 0; k < kPkgCount; ++k) PollPrep(hwnd, k);
+            }
             return 0;
         case WM_COMMAND:
             switch (LOWORD(wp)) {
@@ -1049,6 +1303,10 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDS_STOP:
                     SendMessageW(hwnd, WM_CLOSE, 0, 0);
                     return 0;
+                case IDS_OFFICE:
+                case IDS_ADOBE:
+                    StartPrep(hwnd, LOWORD(wp) - IDS_OFFICE);
+                    return 0;
             }
             break;
         case WM_CLOSE: {
@@ -1056,7 +1314,15 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             {
                 Lock l(&g_cs);
                 for (const auto& kv : g_clients)
-                    if (kv.second.state == L"受け取り中" && GetTickCount() - kv.second.lastTick < 30000) busy = true;
+                    if (kv.second.state == L"受け取り中" &&
+                        GetTickCount() - kv.second.lastTick < 30000)
+                        busy = true;
+            }
+            if ((g_pkgs[0].prep || g_pkgs[1].prep) &&
+                MessageBoxW(hwnd, L"インストール元を用意しています。閉じると、用意は止まります。閉じますか？", kAppName,
+                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+                return 0;
+            {
             }
             if (busy && MessageBoxW(hwnd, L"受け取っている途中の PC があります。配布をやめますか？", kAppName,
                                     MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
@@ -1066,6 +1332,13 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             KillTimer(hwnd, kServerTimer);
+            for (int k = 0; k < kPkgCount; ++k) {
+                if (g_pkgs[k].prep) {
+                    TerminateProcess(g_pkgs[k].prep, 1);
+                    CloseHandle(g_pkgs[k].prep);
+                    g_pkgs[k].prep = nullptr;
+                }
+            }
             StopServerSockets();
             {
                 Lock l(&g_cs);
@@ -1554,6 +1827,8 @@ void Shutdown() {
 
 bool IsServerRunning() { return g_server != nullptr; }
 
+void SetProfilePath(const std::wstring& profilePath) { g_profilePath = profilePath; }
+
 void OpenServerWindow(HWND owner) {
     if (g_server) {
         SetForegroundWindow(g_server);
@@ -1622,6 +1897,10 @@ void OpenServerWindow(HWND owner) {
         }
     }
 
+    for (int k = 0; k < kPkgCount; ++k) {
+        ScanPackage(k);
+        g_pkgs[k].text = PkgReadyText(k);
+    }
     std::wstring err;
     if (!StartServerSockets(err)) {
         StopServerSockets();

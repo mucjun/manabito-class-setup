@@ -1,4 +1,4 @@
-# まなびと講習準備（v0.13.1）
+# まなびと講習準備（v0.15.0）
 
 講習で使う Windows 11 の PC を点検し、講習用の設定にそろえるアプリです。
 
@@ -154,6 +154,41 @@ Program Files 以外（ダウンロードなど）から起動すると、`C:\Pr
 - ［この場所のまま使う］を選ぶか、`--portable` を付けて起動すると、入れずにその場所で動く（開発・試験用）。
 - 開いているアプリがあると入れ替えられないので、「閉じてから、もう一度起動してください」と出す。
 
+## Office の LAN 配布（v0.14.0）
+
+- 配布サーバーの窓の［Office のインストール元を用意する］：展開ツールの `/download` で、インストール元（約 3.4 GB）を
+  `%LOCALAPPDATA%\ManabitoClassSetup\OfficeSource` に一度だけダウンロードする（scripts\office_source.ps1、管理者は要らない）。
+  用意できると、窓を開いている間、自動で配る（合言葉なし）。
+- 受け取る側（時間のかかる準備・まとめて実行の Office のインストール）：LAN を 3 秒探し、インストール元を持った配布サーバーがあれば
+  受け取って（`%ProgramData%\ManabitoClassSetup\work\office_source`）手元からインストールし、終わったら消す。無ければインターネットから。
+  `officeLanSource`（標準 true）で切り替え。
+- 守り：setup.exe は毎回マイクロソフトから入手して署名を確かめる。LAN から受け取るのは `Office\` の下だけで、
+  「..」やドライブ名を含む名前が 1 つでもあれば LAN からの受け取りをやめてインターネットから入れる。.cab はすべてマイクロソフトの署名を確かめる。
+- 夜間の時間指定で使うときは、その時刻に配布サーバーの PC でアプリと配布の窓を開いておく。
+- **Creative Cloud デスクトップアプリ（ランチャー）**も同じ形で配れる（v0.15.0）。配布サーバーの［Creative Cloud（ランチャー）を用意する］で、
+  Adobe の公式ページ「Download Creative Cloud desktop app using direct links」を読み、Windows（64 ビット）用のいちばん新しい ZIP を入手する
+  （scripts\adobe_source.ps1。https の *.adobe.com の ACCCx…zip だけ使う。`adobeOfflineZipUrl` で直接指定も可）。
+  受け取る側は ZIP を展開し、中の .exe と .dll がすべて Adobe の署名つきかを確かめてから Set-up.exe を動かす。`adobeLanSource`（標準 true）。
+- Photoshop などのアプリ本体は、受講生がサインインしたあと各 PC が Adobe から直接ダウンロードする（個人版のため配れない）。
+
+## 前の受講生のサインインを消す（v0.14.0）
+
+［履歴を消す］（閉じるときの削除・まとめて実行も）と点検の対象：
+
+| 対象 | 消し方 |
+|---|---|
+| Edge・Chrome | User Data ごと消して、初めて開いたときの状態に（サインイン・プロファイル・拡張機能・パスワードも）。`browserFullReset`（標準 true） |
+| Windows に追加されたアカウント | Office などがサインインすると「メールとアカウント」に残る。Windows の仕組み（WAM）でサインアウト |
+| Office | サインインの記録（Identity・IdentityCache・OneAuth）。`officeRemoveLicenses`（標準 true）ならライセンスも |
+| Adobe Creative Cloud | サインインの記録（%LOCALAPPDATA%\Adobe\OOBE\opm.db）。Creative Cloud を閉じてから |
+| 保存されたログイン情報 | 資格情報マネージャーの「汎用資格情報」。ネットワーク共有・プリンター用（Windows 資格情報）は残す。残したいものは `keepCredentials` に語を書く |
+| ほかのアプリ・ブラウザー | Firefox・Brave・Opera・Vivaldi・Zoom・LINE・Discord・Slack・Teams・ChatGPT・Claude・Google ドライブ・Dropbox・iCloud・WhatsApp・Spotify・Notion のデータ（ログインと設定）。`signOutApps`（標準 true） |
+| この利用者が入れたアプリ | 点検で知らせるだけ（管理者なしで入れられたもの） |
+
+- ブラウザーで Google・Apple・AI ツールなどにログインしていた分は、ブラウザーの初期化で消える。
+- **開発用の PC では［履歴を消す］を実行しない**（git などのログインも消える）。
+- 講習の間で PC を完全に基準の状態へ戻すには、まなびとバックアップでの復元が確実。
+
 ## 授業ファイルの配布（LAN 内）
 
 **配布する側**：右上の［配布サーバーになる］→ 配布用の窓に、ファイル・フォルダー・ドライブ（USB メモリなど）をドロップする。
@@ -227,6 +262,7 @@ git push -u origin main
 
 ```
 cd C:\dev\ManabitoClassSetup
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\tools\bump_version.ps1 0.14.0
 ```
 

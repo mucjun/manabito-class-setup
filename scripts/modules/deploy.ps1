@@ -358,6 +358,173 @@ function Initialize-WorkDir {
 
 # ---------------------------------------------------------------- Office
 
+# ---------------------------------------------------------------- LAN の配布サーバーから Office のインストール元を受け取る
+# 配布サーバー（src\share.cpp）の「OFFICE」の受け渡し。合言葉は使わない（夜間の自動実行のため）。
+# 守り：setup.exe は毎回マイクロソフトから入手して署名を確かめる。LAN から受け取るのは Office\ の下のデータだけで、
+#       .cab はすべてマイクロソフトの署名を確かめる（.dat は Office 自身が、署名済みの .cab の値で確かめる）。
+
+$script:LanUdpPort = 47811
+
+function Get-LanBroadcastTargets {
+    $t = New-Object System.Collections.Generic.List[System.Net.IPAddress]
+    $t.Add([System.Net.IPAddress]::Broadcast)
+    foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+        if ($nic.OperationalStatus -ne 'Up' -or $nic.NetworkInterfaceType -eq 'Loopback') { continue }
+        foreach ($u in $nic.GetIPProperties().UnicastAddresses) {
+            if ($u.Address.AddressFamily -ne 'InterNetwork' -or -not $u.IPv4Mask) { continue }
+            $a = $u.Address.GetAddressBytes(); $m = $u.IPv4Mask.GetAddressBytes()
+            if ($m[0] -eq 0) { continue }
+            $b = New-Object byte[] 4
+            for ($i = 0; $i -lt 4; $i++) { $b[$i] = [byte](($a[$i] -band $m[$i]) -bor (255 -bxor $m[$i])) }
+            $t.Add((New-Object System.Net.IPAddress (,$b)))
+        }
+    }
+    return $t
+}
+
+# 戻り値：いちばん新しい版のインストール元を持つ配布サーバー（無ければ $null）。Tag は office ／ adobe
+function Find-LanPackageServer {
+    param([string]$Tag, [int]$Seconds = 3)
+    $udp = $null
+    try {
+        $udp = New-Object System.Net.Sockets.UdpClient 0
+        $udp.EnableBroadcast = $true
+        $udp.Client.ReceiveTimeout = 500
+        $q = [Text.Encoding]::ASCII.GetBytes('MNBSHARE?1')
+        foreach ($t in Get-LanBroadcastTargets) {
+            try { [void]$udp.Send($q, $q.Length, (New-Object System.Net.IPEndPoint($t, $script:LanUdpPort))) } catch { }
+        }
+        $best = $null; $bestVer = $null
+        $until = (Get-Date).AddSeconds($Seconds)
+        while ((Get-Date) -lt $until) {
+            $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+            try { $data = $udp.Receive([ref]$ep) } catch { continue }
+            $msg = [Text.Encoding]::UTF8.GetString($data)
+            if (-not $msg.StartsWith('MNBSHARE!1|')) { continue }
+            $f = $msg.Split('|')
+            # 6 番目から「名前=版」「バイト」の組が続く（office=…|…|adobe=…|…）
+            $ver = $null; $bytes = [double]0
+            for ($j = 6; $j + 1 -lt $f.Count; $j += 2) {
+                if ($f[$j].StartsWith($Tag + '=')) { $ver = $f[$j].Substring($Tag.Length + 1); $bytes = [double]$f[$j + 1] }
+            }
+            if (-not $ver -or $ver -notmatch '^\d+(\.\d+)+$') { continue }
+            $cand = [pscustomobject]@{ Name = $f[1]; Ip = $ep.Address.ToString(); Port = [int]$f[2]; Version = $ver; Bytes = $bytes }
+            $cv = [version](($cand.Version -split '\.')[0..([Math]::Min(3, ($cand.Version -split '\.').Count - 1))] -join '.')
+            if (-not $best -or $cv -gt $bestVer) { $best = $cand; $bestVer = $cv }
+        }
+        return $best
+    } catch {
+        Write-Host ('（LAN の配布サーバーを探せませんでした：' + $_.Exception.Message + '）')
+        return $null
+    } finally { if ($udp) { $udp.Close() } }
+}
+
+function Send-NetLine {
+    param($Stream, [string]$Text)
+    $b = [Text.Encoding]::UTF8.GetBytes($Text + "`n")
+    $Stream.Write($b, 0, $b.Length)
+}
+
+function Read-NetLine {
+    param($Stream)
+    $ms = New-Object System.IO.MemoryStream
+    while ($true) {
+        $c = $Stream.ReadByte()
+        if ($c -lt 0) { throw '配布サーバーとのつながりが切れました。' }
+        if ($c -eq 10) { break }
+        if ($ms.Length -gt 65536) { throw '配布サーバーの返事が長すぎます。' }
+        $ms.WriteByte([byte]$c)
+    }
+    return ([Text.Encoding]::UTF8.GetString($ms.ToArray())).TrimEnd("`r")
+}
+
+# 受け取ってよい名前か（Prefix\ の下だけ。「..」・ドライブ名・使えない文字は受け取らない）
+function Test-LanRelPath {
+    param([string]$Rel, [string]$Prefix = 'Office')
+    if (-not $Rel -or $Rel.Length -gt 300) { return $false }
+    if (-not $Rel.StartsWith($Prefix + '\')) { return $false }
+    if ($Rel -match '[:*?"<>|/]' -or $Rel -match '[\x00-\x1f]') { return $false }
+    foreach ($seg in $Rel.Split('\')) { if (-not $seg -or $seg -eq '.' -or $seg -eq '..' -or $seg.EndsWith('.') -or $seg.EndsWith(' ')) { return $false } }
+    return $true
+}
+
+# インストール元を Dest に受け取る。うまくいけば空、だめなら理由
+function Receive-LanPackage {
+    param($Server, [string]$Dest, [string]$ListCmd = 'OFFICE', [string]$GetCmd = 'OGET', [string]$Prefix = 'Office')
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $iar = $client.BeginConnect($Server.Ip, $Server.Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne(8000)) { return '配布サーバーにつながりませんでした。' }
+        $client.EndConnect($iar)
+        $ns = $client.GetStream()
+        $ns.ReadTimeout = 120000
+        Send-NetLine $ns ($ListCmd + '|' + $env:COMPUTERNAME)
+        $head = Read-NetLine $ns
+        if (-not $head.StartsWith('COUNT|')) { return ('配布サーバーの返事：' + $head) }
+        $h = $head.Split('|')
+        $n = [int]$h[1]; $total = [double]$h[2]
+        $items = @()
+        for ($i = 0; $i -lt $n; $i++) {
+            $g = (Read-NetLine $ns).Split('|')
+            $items += [pscustomobject]@{ Dir = ($g[0] -eq 'D'); Rel = $g[1]; Size = [double]$g[2] }
+        }
+        if (Test-Path -LiteralPath $Dest) { Remove-Item -LiteralPath $Dest -Recurse -Force }
+        New-Item -ItemType Directory -Path $Dest -Force | Out-Null
+        $buf = New-Object byte[] (1MB)
+        $got = [double]0; $sw = [System.Diagnostics.Stopwatch]::StartNew(); $failed = 0; $ok = 0; $lastShow = [long]-1000
+        for ($i = 0; $i -lt $items.Count; $i++) {
+            $it = $items[$i]
+            if (-not (Test-LanRelPath $it.Rel $Prefix)) { if (-not $it.Dir) { $failed++ }; continue }
+            $path = Join-Path $Dest $it.Rel
+            if ($it.Dir) { New-Item -ItemType Directory -Path $path -Force | Out-Null; continue }
+            if (Test-Cancelled) { return '取り消されました。' }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+            Send-NetLine $ns ($GetCmd + '|' + $i)
+            $line = Read-NetLine $ns
+            if (-not $line.StartsWith('DATA|')) { return ('配布サーバーが「' + $it.Rel + '」を渡せませんでした：' + $line) }
+            $left = [double]$line.Substring(5)
+            $fs = [System.IO.File]::Create($path)
+            try {
+                while ($left -gt 0) {
+                    $want = [int][Math]::Min([double]$buf.Length, $left)
+                    $k = $ns.Read($buf, 0, $want)
+                    if ($k -le 0) { throw '配布サーバーとのつながりが切れました。' }
+                    $fs.Write($buf, 0, $k)
+                    $left -= $k; $got += $k
+                    if ($sw.ElapsedMilliseconds - $lastShow -ge 1000 -or $left -eq 0) {   # 1 秒ごとに表示
+                        $lastShow = $sw.ElapsedMilliseconds
+                        $sec = [Math]::Max([double]0.001, $sw.Elapsed.TotalSeconds)
+                        $rate = $got / $sec
+                        $pct = -1; if ($total -gt 0) { $pct = [Math]::Min([double]99, [double]($got * 100 / $total)) }
+                        $text = ('{0} から受信 {1} / {2}・{3}/秒' -f $Server.Name, (Format-Bytes $got), (Format-Bytes $total), (Format-Bytes $rate))
+                        if ($rate -gt 0 -and $total -gt $got) { $text += ('・あと約 ' + (Format-Duration (($total - $got) / $rate))) }
+                        Set-DeployProgress $pct $text
+                    }
+                }
+            } finally { $fs.Close() }
+            $ok++
+        }
+        try { Send-NetLine $ns ('DONE|' + $ok + '|' + $failed) } catch { }
+        if ($failed -gt 0) { return ('受け取れないファイルが ' + $failed + ' 個ありました。') }
+        $script:LastLanSummary = ('LAN の配布サーバー（{0}）から {1} を {2} で受け取りました' -f $Server.Name, (Format-Bytes $got), (Format-Duration $sw.Elapsed.TotalSeconds))
+        return ''
+    } catch {
+        return ('受け取りの途中で問題が起きました：' + $_.Exception.Message)
+    } finally { $client.Close() }
+}
+
+# 受け取ったインストール元の .cab がすべてマイクロソフトの署名つきか。だめなら理由
+function Test-LanOfficeSource {
+    param([string]$Dir)
+    $cabs = @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Filter '*.cab' -ErrorAction SilentlyContinue)
+    if ($cabs.Count -eq 0) { return '受け取ったものの中に .cab がありません。' }
+    foreach ($c in $cabs) {
+        $bad = Test-Signer $c.FullName 'Microsoft Corporation'
+        if ($bad) { return ($c.Name + '：' + $bad) }
+    }
+    return ''
+}
+
 function Install-Office {
     param($Prof, [string]$ProfileDir)
     $name = 'Microsoft 365（Office）'
@@ -377,15 +544,48 @@ function Install-Office {
     $bad = Test-Signer $setup 'Microsoft Corporation'
     if ($bad) { return New-Row 'office' $name 'FAIL' '入っていない' '入っている' ('展開ツールを確かめられませんでした：' + $bad) }
 
-    Set-DeployStep 3 'インストール（ダウンロードと展開）'
+    # LAN の配布サーバーにインストール元があれば、そこから受け取る（無ければインターネットから）
+    $config = $xml
+    $local = $null
+    $how = 'インターネットから'
+    $script:LastLanSummary = ''
+    if ([bool](Get-Pref $Prof 'officeLanSource' $true)) {
+        Set-DeployStep 3 'LAN の配布サーバーを探す'
+        $server = Find-LanPackageServer 'office' 3
+        if ($server) {
+            Set-DeployStep 4 ('インストール元を受け取る（' + $server.Name + '、' + $server.Version + '）')
+            $local = Join-Path $script:WorkDir 'office_source'
+            $why = Receive-LanPackage $server $local 'OFFICE' 'OGET' 'Office'
+            if (-not $why) { $why = Test-LanOfficeSource $local }
+            if ($why) {
+                Write-Host ('LAN から受け取れなかったため、インターネットから入れます：' + $why)
+                if (Test-Path -LiteralPath $local) { Remove-Item -LiteralPath $local -Recurse -Force -ErrorAction SilentlyContinue }
+                $local = $null
+                $how = 'インターネットから（LAN からは受け取れませんでした：' + $why + '）'
+            } else {
+                [xml]$cfg = Get-Content -LiteralPath $xml -Raw -Encoding UTF8
+                $cfg.Configuration.Add.SetAttribute('SourcePath', $local)
+                $cfg.Configuration.Add.SetAttribute('AllowCdnFallback', 'TRUE')
+                $config = Join-Path $script:WorkDir 'office-lan.xml'
+                $cfg.Save($config)
+                $how = $script:LastLanSummary
+            }
+        } else {
+            Set-DeployStep 4 'LAN に配布サーバーが無いため、インターネットから入れます'
+        }
+    }
+
+    Set-DeployStep 5 'インストール'
     $expect = [double](Get-Pref $Prof 'officeExpectedMB' 3500) * 1MB
-    $code = Start-ProcessWithProgress $setup @('/configure', ('"' + $xml + '"')) $script:WorkDir 'Office をインストール中' $expect
-    Set-DeployStep 4 '入ったことの確認'
+    if ($local) { $expect = 0 }   # 手元から入れるので、受信量では進み具合を見ない
+    $code = Start-ProcessWithProgress $setup @('/configure', ('"' + $config + '"')) $script:WorkDir 'Office をインストール中' $expect
+    Set-DeployStep 6 '入ったことの確認'
+    if ($local -and (Test-Path -LiteralPath $local)) { Remove-Item -LiteralPath $local -Recurse -Force -ErrorAction SilentlyContinue }  # 3.4 GB を残さない
     $after = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' 'VersionToReport'
     if ($code -ne 0 -or -not $after) {
         return New-Row 'office' $name 'FAIL' '入っていない' '入っている' ('展開ツールの終了コード ' + $code + '。' + $script:LastProcessSummary + '。記録は %TEMP% と C:\Windows\Temp の Office のログを見てください。')
     }
-    return New-Row 'office' $name 'DONE' '入っていない' ('入っている（' + $after + '）') ('構成：' + $xmlName + '。' + $script:LastProcessSummary)
+    return New-Row 'office' $name 'DONE' '入っていない' ('入っている（' + $after + '）') ('構成：' + $xmlName + '。' + $how + '。' + $script:LastProcessSummary)
 }
 
 # ---------------------------------------------------------------- Adobe
@@ -398,26 +598,84 @@ function Get-AdobeCCPath {
     return $null
 }
 
+# 受け取った Creative Cloud の ZIP を展開し、中の .exe と .dll がすべて Adobe の署名つきかを確かめる。Set-up.exe の場所（だめなら $null と理由）
+function Expand-LanAdobe {
+    param([string]$Dir, [string]$Dest)
+    $zip = Get-ChildItem -LiteralPath $Dir -Recurse -File -Filter 'ACCCx*.zip' | Select-Object -First 1
+    if (-not $zip) { return @($null, '受け取ったものの中に ZIP がありません。') }
+    if (Test-Path -LiteralPath $Dest) { Remove-Item -LiteralPath $Dest -Recurse -Force }
+    Expand-Archive -LiteralPath $zip.FullName -DestinationPath $Dest -Force
+    $setup = Get-ChildItem -LiteralPath $Dest -Recurse -File -Filter 'Set-up.exe' | Select-Object -First 1
+    if (-not $setup) { return @($null, 'ZIP の中に Set-up.exe がありません。') }
+    $pe = @(Get-ChildItem -LiteralPath $Dest -Recurse -File -Include '*.exe', '*.dll')
+    Set-DeployProgress -1 ('受け取ったもの {0} 個の電子署名を確かめています' -f $pe.Count)
+    foreach ($f in $pe) {
+        $bad = Test-Signer $f.FullName 'Adobe'
+        if ($bad) { return @($null, ($f.Name + '：' + $bad)) }
+    }
+    return @($setup.FullName, '')
+}
+
 function Install-AdobeCC {
     param($Prof, [string]$ProfileDir)
     $name = 'Adobe Creative Cloud デスクトップアプリ'
     if (Get-AdobeCCPath) { return New-Row 'adobe' $name 'SAME' '入っている' '入っている' '' }
-    $url = [string](Get-Pref $Prof 'adobeInstallerUrl' '')
-    if (-not $url) { return New-Row 'adobe' $name 'FAIL' '入っていない' '入っている' 'プロファイルに adobeInstallerUrl がありません。' }
-
     Initialize-WorkDir
-    $setup = Join-Path $script:WorkDir 'Creative_Cloud_Set-Up.exe'
-    Set-DeployStep 1 'インストーラーのダウンロード'
-    Get-Download $url $setup 'Creative Cloud のインストーラー'
-    Set-DeployStep 2 '電子署名の確認'
-    $bad = Test-Signer $setup 'Adobe'
-    if ($bad) { return New-Row 'adobe' $name 'FAIL' '入っていない' '入っている' ('インストーラーを確かめられませんでした：' + $bad) }
-    Set-DeployStep 3 'インストール'
+    $lanDir = Join-Path $script:WorkDir 'adobe_source'
+    $lanSetupDir = Join-Path $script:WorkDir 'adobe_setup'
+    $setup = $null
+    $script:AdobeHow = 'インターネットから'
+    try {
+        # 1. LAN の配布サーバーにランチャーがあれば受け取る
+        if ([bool](Get-Pref $Prof 'adobeLanSource' $true)) {
+            Set-DeployStep 1 'LAN の配布サーバーを探す'
+            $server = Find-LanPackageServer 'adobe' 3
+            if ($server) {
+                Set-DeployStep 2 ('インストーラーを受け取る（' + $server.Name + '、' + $server.Version + '）')
+                $why = Receive-LanPackage $server $lanDir 'ADOBE' 'AGET' 'Adobe'
+                if (-not $why) {
+                    $r = Expand-LanAdobe $lanDir $lanSetupDir
+                    $setup = $r[0]; $why = $r[1]
+                }
+                if ($why) {
+                    Write-Host ('LAN から受け取れなかったため、インターネットから入れます：' + $why)
+                    $setup = $null
+                    $script:AdobeHow = 'インターネットから（LAN からは受け取れませんでした：' + $why + '）'
+                } else {
+                    $script:AdobeHow = $script:LastLanSummary
+                }
+            }
+        }
+        # 2. 無ければ、今までどおり小さなインストーラーをインターネットから
+        if (-not $setup) {
+            $url = [string](Get-Pref $Prof 'adobeInstallerUrl' '')
+            if (-not $url) { return New-Row 'adobe' $name 'FAIL' '入っていない' '入っている' 'プロファイルに adobeInstallerUrl がありません。' }
+            Set-DeployStep 2 'インストーラーのダウンロード'
+            $setup = Join-Path $script:WorkDir 'Creative_Cloud_Set-Up.exe'
+            Get-Download $url $setup 'Creative Cloud のインストーラー'
+        }
+        Set-DeployStep 3 '電子署名の確認'
+        $bad = Test-Signer $setup 'Adobe'
+        if ($bad) { return New-Row 'adobe' $name 'FAIL' '入っていない' '入っている' ('インストーラーを確かめられませんでした：' + $bad) }
+        $row = Install-AdobeCCWith $Prof $setup
+        if ($row.State -eq 'DONE') { $row.Detail = $script:AdobeHow + '。' + $row.Detail }
+        return $row
+    } finally {
+        foreach ($d in @($lanDir, $lanSetupDir)) { if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+}
+
+# インストーラー（$Setup）を動かして、入るのを待つ
+function Install-AdobeCCWith {
+    param($Prof, [string]$Setup)
+    $name = 'Adobe Creative Cloud デスクトップアプリ'
+    $setup = $Setup
+    Set-DeployStep 4 'インストール'
 
     $expect = [double](Get-Pref $Prof 'adobeExpectedMB' 600) * 1MB
     # 個人向けのインストーラーは、--silent でもサインイン画面を出して待つことがある（Adobe コミュニティの報告）。
     # 画面は隠さず、入ったと分かったらサインイン画面を閉じて先へ進む。15 分進まなければ打ち切る。
-    $code = Start-ProcessWithProgress $setup @('--silent') $script:WorkDir 'Creative Cloud デスクトップアプリをインストール中' $expect `
+    $code = Start-ProcessWithProgress $setup @('--silent') (Split-Path -Parent $setup) 'Creative Cloud デスクトップアプリをインストール中' $expect `
             -Visible -DoneCheck { [bool](Get-AdobeCCPath) } -DoneGraceSeconds 60 -StallMinutes 15 -StallBytes 10MB
     if ($script:ProcessEndedEarly) {
         Stop-Process -Name 'Creative Cloud' -Force -ErrorAction SilentlyContinue   # 入ったあとに出るサインイン画面
@@ -426,7 +684,7 @@ function Install-AdobeCC {
         return New-Row 'adobe' $name 'FAIL' '入っていない' '入っている' ('15 分たっても進まないため打ち切りました。インストーラーがサインインなどの画面の操作を待っていた可能性があります。人がいるときに［今すぐ実行］で試すか、Adobe の管理コンソールで作ったパッケージを使ってください。' + $script:LastProcessSummary)
     }
     # インストーラーが先に終わって、裏で続きを入れることがあるので、最大 15 分待つ
-    Set-DeployStep 4 '仕上げと確認'
+    Set-DeployStep 5 '仕上げと確認'
     for ($i = 0; $i -lt 90 -and -not (Get-AdobeCCPath); $i++) {
         if (Test-Cancelled) { break }
         Set-DeployProgress -1 ('Creative Cloud の仕上げを待っています（{0}／最大 15 分）' -f (Format-Duration ($i * 10)))
@@ -711,8 +969,8 @@ function Register-DeployPlan {
     $steps = @()
     if ($Office -eq 2)  { Register-DeployItem 'office-remove' 'Microsoft 365（Office）の削除' 4;          $steps += ,@('Remove-Office',   'Microsoft 365（Office）の削除', 'office-remove') }
     if ($Adobe -eq 2)   { Register-DeployItem 'adobe-remove'  'Adobe Creative Cloud の削除' 5;            $steps += ,@('Remove-AdobeCC',  'Adobe Creative Cloud の削除', 'adobe-remove') }
-    if ($Office -eq 1)  { Register-DeployItem 'office'        'Microsoft 365（Office）のインストール' 4;  $steps += ,@('Install-Office',  'Microsoft 365（Office）', 'office') }
-    if ($Adobe -eq 1)   { Register-DeployItem 'adobe'         'Adobe Creative Cloud のインストール' 4;    $steps += ,@('Install-AdobeCC', 'Adobe Creative Cloud デスクトップアプリ', 'adobe') }
+    if ($Office -eq 1)  { Register-DeployItem 'office'        'Microsoft 365（Office）のインストール' 6;  $steps += ,@('Install-Office',  'Microsoft 365（Office）', 'office') }
+    if ($Adobe -eq 1)   { Register-DeployItem 'adobe'         'Adobe Creative Cloud のインストール' 5;    $steps += ,@('Install-AdobeCC', 'Adobe Creative Cloud デスクトップアプリ', 'adobe') }
     if ($OwnApps -eq 1) { Register-DeployItem 'ownapps'       '独自アプリの入手と展開' 2;                 $steps += ,@('Install-OwnApps', '独自アプリ', 'ownapps') }
     return ,$steps
 }

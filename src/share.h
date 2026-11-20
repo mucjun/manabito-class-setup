@@ -10,6 +10,10 @@
 //   受→配（TCP）LIST                  ← COUNT|件数|合計  のあと  F|相対パス|大きさ ／ D|相対パス|0  を件数分
 //   受→配（TCP）GET|番号              ← DATA|大きさ  のあと中身 ／ ERR|理由
 //   受→配（TCP）DONE|できた数|できなかった数
+//   インストール元（合言葉なし。時間のかかる準備から使う。中身の署名は受け取る側で確かめる）:
+//   配→受（UDP）の答えの続き  |office=版|バイト|adobe=版|バイト   （無ければ 版 は空、バイトは 0）
+//   受→配（TCP）OFFICE|PC名 ／ ADOBE|PC名   ← COUNT|件数|合計  のあと  F|Office\…（Adobe\…）|大きさ ／ D|…|0
+//   受→配（TCP）OGET|番号 ／ AGET|番号     ← DATA|大きさ  のあと中身
 
 #pragma once
 // windows.h より前に winsock2.h が要る share.cpp は、自分で先に読み込む。ここでは windows.h だけ使う。
@@ -33,7 +37,8 @@ void Init(HINSTANCE inst, HWND owner, UINT foundMsg);
 // アプリの終了時：探すのと配布をやめる
 void Shutdown();
 
-// ［配布サーバーになる］
+// ［配布サーバーになる］。profilePath は Office のインストール元を用意するときの構成に使う（選んでいるプロファイル）
+void SetProfilePath(const std::wstring& profilePath);
 void OpenServerWindow(HWND owner);
 bool IsServerRunning();
 
