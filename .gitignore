@@ -1,0 +1,5 @@
+# ビルドの結果（GitHub Actions が作る）
+build/
+# 検証用の MinGW ビルド（Claude の検証環境で作るもの）
+dist-mingw/
+*.zip

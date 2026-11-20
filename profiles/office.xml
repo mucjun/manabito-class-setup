@@ -1,0 +1,21 @@
+<!--
+  まなびと講習準備：Office 展開ツール（setup.exe /configure）の構成
+  ・Microsoft 365 Apps（O365ProPlusRetail）、64 ビット、日本語、最新チャネル
+  ・画面は出さず、使用許諾に自動で同意する
+  ・Teams・Skype for Business（Lync）・旧 OneDrive for Business（Groove）は入れない
+  複数の人が同じ PC でサインインして使う場合は、下の SharedComputerLicensing の行の
+  コメントを外す（ライセンスの種類によって使えるかが変わるので、契約を確かめてから）。
+-->
+<Configuration>
+  <Add OfficeClientEdition="64" Channel="Current">
+    <Product ID="O365ProPlusRetail">
+      <Language ID="ja-jp" />
+      <ExcludeApp ID="Groove" />
+      <ExcludeApp ID="Lync" />
+      <ExcludeApp ID="Teams" />
+    </Product>
+  </Add>
+  <Updates Enabled="TRUE" />
+  <Display Level="None" AcceptEULA="TRUE" />
+  <!-- <Property Name="SharedComputerLicensing" Value="1" /> -->
+</Configuration>

@@ -1,0 +1,81 @@
+# まなびと講習準備 ― 版の印（タグ v*）を送ったら、ビルドして Releases に置き、目録（release/apps.json）を書き換える
+#
+#   git tag v0.14.0
+#   git push origin v0.14.0
+#
+# 1. Windows の上で Visual Studio でビルド（BUILD_WINDOWS.cmd）
+# 2. EXE の版とタグが同じかを確かめる（違えば止める）
+# 3. build\Release の中身を ZIP にして Releases に置く
+# 4. release/apps.json の「まなびと講習準備」の行（版・URL・SHA-256）を書き換えて main に保存
+#    （ZIP を置いてから目録を書き換えるので、PC が「まだ無い ZIP」を見に行くことはない）
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ビルド（Visual Studio）
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSDIR=%%i"
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          call BUILD_WINDOWS.cmd || exit /b 1
+          if not exist build\Release\ManabitoClassSetup.exe exit /b 1
+
+      - name: 版の確認と ZIP
+        id: pack
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $ver = $tag.TrimStart('v')
+          $fv = (Get-Item 'build\Release\ManabitoClassSetup.exe').VersionInfo
+          $exeVer = '{0}.{1}.{2}' -f $fv.FileMajorPart, $fv.FileMinorPart, $fv.FileBuildPart
+          if ($exeVer -ne $ver) { throw "EXE の版（$exeVer）とタグ（$ver）が違います。tools\bump_version.ps1 で版をそろえてから、タグを付け直してください。" }
+          $zip = "ManabitoClassSetup_v$ver.zip"
+          Compress-Archive -Path 'build\Release\*' -DestinationPath $zip -Force
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "hash=$hash" >> $env:GITHUB_OUTPUT
+          "ver=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "ZIP: $zip  SHA-256: $hash"
+
+      - name: Releases に置く
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' '${{ steps.pack.outputs.zip }}' `
+            --title 'まなびと講習準備 ${{ github.ref_name }}' `
+            --notes "docs/CHANGES_${{ github.ref_name }}.md を参照。SHA-256: ${{ steps.pack.outputs.hash }}"
+
+      - name: 目録（release/apps.json）を書き換える
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git checkout main
+          $path = 'release/apps.json'
+          $j = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+          $url = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.pack.outputs.zip }}"
+          $self = @($j.apps) | Where-Object { $_.exe -ieq 'ManabitoClassSetup.exe' } | Select-Object -First 1
+          if (-not $self) { throw 'apps.json に「まなびと講習準備」（exe が ManabitoClassSetup.exe）の行がありません。' }
+          $self.version = '${{ steps.pack.outputs.ver }}'
+          $self.url = $url
+          $self.sha256 = '${{ steps.pack.outputs.hash }}'
+          $j | ConvertTo-Json -Depth 6 | Set-Content $path -Encoding utf8
+          git add $path
+          git commit -m "目録：まなびと講習準備 ${{ github.ref_name }}"
+          git push origin main

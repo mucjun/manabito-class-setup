@@ -1,0 +1,158 @@
+﻿# まなびと講習準備 ― 共通の部品
+# 判定の記号: OK=そろっている  NG=違う  PART=一部異なる  INFO=情報  NA=対象外  ERR=確認できない
+
+$script:DetailLines = New-Object System.Collections.Generic.List[string]
+
+function New-Row {
+    param([string]$Id, [string]$Name, [string]$State,
+          [string]$Current = '', [string]$Expected = '', [string]$Detail = '')
+    [pscustomobject]@{
+        Id = $Id; Name = $Name; State = $State
+        Current = $Current; Expected = $Expected; Detail = $Detail
+    }
+}
+
+# 詳しい記録（_詳細.txt）に書く行
+function Add-Detail {
+    param([string]$Text)
+    $script:DetailLines.Add($Text) | Out-Null
+}
+
+# レジストリの値を読む。無ければ $null。
+function Get-RegValue {
+    param([string]$Path, [string]$Name)
+    # 値が無いのは普通のことなので、エラーを出さない読み方にする（記録に「終了エラー」が並ばないように）
+    $key = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($null -eq $key) { return $null }
+    try { return $key.GetValue($Name, $null) } catch { return $null }
+}
+
+# 電池の有無（ノート PC かどうかの目安）
+function Test-HasBattery {
+    $b = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue)
+    return ($b.Count -gt 0)
+}
+
+# プロファイルの値を読む。無ければ既定値。
+function Get-Pref {
+    param($Prof, [string]$Name, $Default)
+    if ($null -eq $Prof) { return $Default }
+    $p = $Prof.PSObject.Properties[$Name]
+    if ($null -eq $p -or $null -eq $p.Value) { return $Default }
+    return $p.Value
+}
+
+function Format-Minutes {
+    param([uint32]$Seconds)
+    if ($Seconds -eq 0) { return 'しない' }
+    if ($Seconds % 60 -eq 0) { return ('{0} 分後' -f ($Seconds / 60)) }
+    return ('{0} 秒後' -f $Seconds)
+}
+
+function Format-Size {
+    param([double]$Bytes)
+    if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+    if ($Bytes -ge 1KB) { return ('{0:N0} KB' -f ($Bytes / 1KB)) }
+    return ('{0:N0} バイト' -f $Bytes)
+}
+
+# フォルダーの中身を数える（desktop.ini は数えない）。フォルダーが無ければ -1。
+function Get-ItemCount {
+    param([string]$Path, [string]$Filter = '*')
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return -1 }
+    $items = @(Get-ChildItem -LiteralPath $Path -Force -Filter $Filter -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -ne 'desktop.ini' })
+    return $items.Count
+}
+
+# このアプリのフォルダーそのもの・その親・その中身なら $true（$AppPath が空なら $false）
+function Test-IsAppFolder {
+    param([string]$Path, [string]$AppPath)
+    if (-not $AppPath -or -not $Path) { return $false }
+    $p = $Path.TrimEnd('\'); $g = $AppPath.TrimEnd('\')
+    if ($g.Equals($p, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($g.StartsWith($p + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $p.StartsWith($g + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+# Edge・Chrome の場所（利用者ごと）
+function Get-BrowserList {
+    return @(
+        [pscustomobject]@{ Id = 'edge';   Name = 'Microsoft Edge';  Process = 'msedge'; Root = (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data') },
+        [pscustomobject]@{ Id = 'chrome'; Name = 'Google Chrome';   Process = 'chrome'; Root = (Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data') }
+    )
+}
+
+# ブラウザーのプロファイルのフォルダー（Default、Profile 1…、Guest Profile）
+function Get-BrowserProfiles {
+    param([string]$Root)
+    if (-not (Test-Path -LiteralPath $Root)) { return @() }
+    return @(Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue |
+             Where-Object { $_.Name -eq 'Default' -or $_.Name -like 'Profile *' -or $_.Name -eq 'Guest Profile' })
+}
+
+# お気に入り（Bookmarks）の件数
+function Get-BookmarkCount {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return 0 }
+    try { $j = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return -1 }
+    $count = 0
+    $stack = New-Object System.Collections.Stack
+    foreach ($r in $j.roots.PSObject.Properties) { if ($r.Value -and $r.Value.PSObject.Properties['children']) { $stack.Push($r.Value) } }
+    while ($stack.Count -gt 0) {
+        $n = $stack.Pop()
+        foreach ($c in @($n.children)) {
+            if ($c.type -eq 'url') { $count++ }
+            elseif ($c.PSObject.Properties['children']) { $stack.Push($c) }
+        }
+    }
+    return $count
+}
+
+# ---- 作業の順番待ち（そろえる・履歴を消す・時間のかかる準備が、同時に 2 つ走らないようにする）
+# PC 全体で 1 つの名前付きミューテックスを使う。プロセスが終われば自動で手放される。
+$script:WorkLockHandle = $null
+
+function Enter-WorkLock {
+    param([int]$WaitSeconds = 0)
+    try {
+        if (-not $script:WorkLockHandle) {
+            $script:WorkLockHandle = New-Object System.Threading.Mutex($false, 'Global\ManabitoClassSetupWork')
+        }
+        return $script:WorkLockHandle.WaitOne($WaitSeconds * 1000)
+    } catch [System.Threading.AbandonedMutexException] {
+        return $true   # 前の作業が異常終了して手放さなかった → 受け取れている
+    } catch {
+        Write-Host ('順番待ちの仕組みを使えませんでした: ' + $_.Exception.Message)
+        return $true   # 仕組みが使えないときは止めない
+    }
+}
+
+# 授業ファイルを受け取るフォルダー（アプリが %LOCALAPPDATA%\ManabitoClassSetup\share_dest.txt に覚えている。無ければドキュメント\授業ファイル）
+function Get-ClassFilesPath {
+    $file = Join-Path $env:LOCALAPPDATA 'ManabitoClassSetup\share_dest.txt'
+    if (Test-Path -LiteralPath $file) {
+        $p = (Get-Content -LiteralPath $file -Raw -Encoding UTF8).Trim()
+        if ($p) { return $p }
+    }
+    return (Join-Path ([Environment]::GetFolderPath('MyDocuments')) '授業ファイル')
+}
+
+# 消してよい場所か（ドライブの直下・利用者のフォルダーそのもの・Windows や Program Files の中は消さない）
+function Test-SafeClassFilesPath {
+    param([string]$Path)
+    if (-not $Path -or -not [System.IO.Path]::IsPathRooted($Path)) { return $false }
+    $p = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($p.Length -le 3) { return $false }
+    $deny = @($env:USERPROFILE, [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments'),
+              (Join-Path $env:USERPROFILE 'Downloads'), $env:WINDIR, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData)
+    foreach ($d in $deny) {
+        if (-not $d) { continue }
+        $d = $d.TrimEnd('\')
+        if ($p -ieq $d) { return $false }
+    }
+    foreach ($d in @($env:WINDIR, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData)) {
+        if ($d -and $p.StartsWith($d.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    }
+    return $true
+}

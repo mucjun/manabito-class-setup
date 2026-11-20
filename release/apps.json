@@ -1,0 +1,12 @@
+{
+  "apps": [
+    {
+      "name": "まなびと講習準備",
+      "version": "0.0.0",
+      "url": "",
+      "sha256": "",
+      "folder": "ManabitoClassSetup",
+      "exe": "ManabitoClassSetup.exe"
+    }
+  ]
+}

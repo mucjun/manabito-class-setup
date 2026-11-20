@@ -1,0 +1,33 @@
+﻿{
+  "name": "WEB 講座",
+  "description": "HTML・CSS の講座。Adobe CC デスクトップアプリを入れる例。背景色 #1F3A5F・Windows Update を止める（2026-11-20 決定）。",
+
+  "wallpaperColor": "#1F3A5F",
+  "showFileExtensions": true,
+  "taskbarWidgets": "hide",
+  "taskbarSearch": "icon",
+  "windowsUpdate": "stop",
+  "browserClearPasswords": true,
+  "cleanOnExit": true,
+
+  "screen": "check-only",
+
+  "office": "install",
+  "officeSetupUrl": "https://officecdn.microsoft.com/pr/wsus/setup.exe",
+  "officeConfig": "office.xml",
+  "officeExpectedMB": 3500,
+  "adobeExpectedMB": 600,
+  "adobeInstallerUrl": "https://prod-rel-ffc-ccm.oobesaas.adobe.com/adobe-ffc-external/core/v1/wam/download?sapCode=KCCC&productName=Creative%20Cloud&os=win",
+  "officeRemoveToolUrl": "https://aka.ms/SaRA_EnterpriseVersionFiles",
+  "adobeCleanerUrl": "https://swupmf.adobe.com/webfeed/CleanerTool/win/AdobeCreativeCloudCleanerTool.exe",
+  "ownAppsManifest": "https://raw.githubusercontent.com/mucjun/manabito-class-setup/main/release/apps.json",
+  "adobe": "install",
+
+  "ownApps": [
+    {
+      "name": "まなびとPDFツール",
+      "folder": "C:\\Program Files\\Org_Apps\\Manabito_Pdf_Tool",
+      "exe": "ManabitoPdfTool.exe"
+    }
+  ]
+}
