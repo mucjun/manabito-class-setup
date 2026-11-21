@@ -181,8 +181,9 @@ function Clear-AdobeSignIn {
 # 以前は資格情報の関数をスクリプトから直接呼んでいたが、パスワードを盗むウイルスと似た動きのため、ウイルス対策に疑われるおそれがあった。
 # 出力は日本語・英語の両方に対応（「ターゲット:」「種類: 汎用」／「Target:」「Type: Generic」）。
 function Get-CmdkeyGeneric {
+    if (-not $env:WINDIR) { return $null }   # 場所を確かめてから組み立てる
     $exe = Join-Path $env:WINDIR 'System32\cmdkey.exe'
-    if (-not $env:WINDIR -or -not (Test-Path -LiteralPath $exe)) { return $null }
+    if (-not (Test-Path -LiteralPath $exe)) { return $null }
     $lines = @(& $exe /list 2>$null)
     $list = New-Object System.Collections.Generic.List[string]
     $target = $null

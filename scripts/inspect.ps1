@@ -20,7 +20,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'apps', 'system', 'signout')) {
+foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'apps', 'system', 'signout', 'quiet', 'health', 'printers')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 
@@ -49,6 +49,9 @@ $checks = @(
     @('見た目と通知',       'Test-TaskbarWidgets', 'タスクバーのウィジェット'),
     @('見た目と通知',       'Test-TaskbarSearch',  'タスクバーの検索'),
     @('見た目と通知',       'Test-StartRecent',    'スタートの「最近使用」'),
+    @('見た目と通知',       'Test-WindowsAds',     'Windows の広告・おすすめ・ヒント'),
+    @('見た目と通知',       'Test-Copilot',        'Copilot'),
+    @('見た目と通知',       'Test-EdgeFirstRun',   'Edge の最初の設定の画面'),
     @('見た目と通知',       'Test-Notifications',  '通知（右下のお知らせ）'),
     @('見た目と通知',       'Test-OneDriveStartup','OneDrive の自動起動'),
     @('音',                 'Test-Volume',         '音量'),
@@ -77,7 +80,11 @@ $checks = @(
     @('アプリ',             'Test-Office',         'Microsoft 365（Office）'),
     @('アプリ',             'Test-AdobeCC',        'Adobe Creative Cloud デスクトップアプリ'),
     @('アプリ',             'Test-OwnApps',        '独自アプリ'),
-    @('この PC',            'Test-DefaultPrinter', '既定のプリンター')
+    @('この PC',            'Test-DefaultPrinter', '既定のプリンター'),
+    @('この PC',            'Test-Printers',       'プリンター（先生用から受け取る）'),
+    @('この PC の健康',     'Test-HealthDisk',     '空き容量'),
+    @('この PC の健康',     'Test-HealthClock',    '時刻のずれ'),
+    @('この PC の健康',     'Test-HealthBattery',  '電池の劣化')
 )
 
 function Clean-Field {

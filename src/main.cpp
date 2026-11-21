@@ -39,7 +39,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.16.0";
+const wchar_t kVersion[] = L"0.18.0";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -96,6 +96,9 @@ const int kIdAppSetup = 6100;  // 独自アプリの行の［セットアップ�
 const int kIconId = 101;       // res\app.rc のアイコン
 const UINT WM_APP_SHARE_FOUND = WM_APP + 5;  // LAN 内に配布サーバーを見つけた（lParam = share::Offer*）
 const UINT_PTR kTimerUpdate = 2;
+const UINT_PTR kTimerReport = 4;  // 先生用への報告（30 秒ごと）
+const UINT WM_APP_REPORTDONE = WM_APP + 8;
+const UINT WM_APP_PUSHDONE = WM_APP + 9;  // 自動で配られたファイルを受け取り終えた
 
 const int kJobApply = 0;
 const int kJobSacOff = 1;
@@ -196,6 +199,15 @@ struct App {
         bool on = false;
         std::wstring ver, url, sha;
     } pendingSelf;  // 独自アプリを入れ終えたあとで、このアプリ自身を更新する
+    // 先生用への報告
+    bool reporting = false, pairAsked = false;
+    DWORD remoteInspectTick = 0;  // 先生用から頼まれて点検した時刻（5 分に 1 回まで）
+    // 自動で配られたファイル
+    bool pushing = false;
+    std::string pushTriedId;  // 最後に受け取りを試した番号
+    int pushTries = 0;        // その番号を試した回数（3 回まで）
+    std::wstring pushState, pushCurrent;  // 先生用への報告に入れる（OK・NG と、番号・個数）
+    std::string printersFailVer;
     std::wstring updCheckOut, updStatus, updVersion;
     DWORD updStartTick = 0;
     std::vector<ProgressItem> progress;  // 作業ごとの行（準備中と、終わった直後に表示）
@@ -1002,6 +1014,8 @@ void FinishClean(JobResult* res) {
     FinishElevated(res, g.cleanTsv, g.cleanLog, t);
 }
 
+void SendReportNow();  // 先生用への報告（後で定義）
+
 void FinishInspection(JobResult* res) {
     SetBusy(false);
     if (!res->started) {
@@ -1020,6 +1034,7 @@ void FinishInspection(JobResult* res) {
         FillList();
         BuildSummary(res->elapsedMs, false);
         InvalidateRect(g.hwnd, nullptr, FALSE);
+        SendReportNow();  // 先生用に、点検の結果を知らせる
         return;
     }
     // 結果ができなかった：PowerShell の出力を見せる
@@ -1034,6 +1049,204 @@ void FinishInspection(JobResult* res) {
     g.lastDetailFile = g.currentOut;
     SetSummaryText(L"点検できませんでした。［記録のフォルダー］の PowerShell.txt を見てください。", kNg);
     MessageBoxW(g.hwnd, msg.c_str(), kAppName, MB_OK | MB_ICONWARNING);
+}
+
+
+// ---------------------------------------------------------------- 先生用への報告（受講生の PC。30 秒ごと・点検のあと）
+
+std::string Utf8Of(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), &s[0], n, nullptr, nullptr);
+    return s;
+}
+
+std::string ReportField(const std::wstring& w, size_t maxLen) {
+    std::wstring t = w.substr(0, maxLen);
+    for (auto& c : t)
+        if (c == L'|' || c == L'\r' || c == L'\n' || c == L'\t') c = L' ';
+    return Utf8Of(t);
+}
+
+// 点検の結果（画面に出している g.rows）から、報告の本文を作る
+std::string BuildReportPayload() {
+    wchar_t pc[MAX_COMPUTERNAME_LENGTH + 2];
+    DWORD n = MAX_COMPUTERNAME_LENGTH + 1;
+    std::wstring pcName = GetComputerNameW(pc, &n) ? std::wstring(pc, n) : L"PC";
+    int ok = 0, ng = 0, na = 0;
+    std::vector<const Row*> items;
+    static const wchar_t* keep[] = {L"office", L"health-disk", L"health-clock", L"health-battery", L"printers", L"wupending", L"defender"};
+    for (const auto& r : g.rows) {
+        if (r.state == L"OK") ++ok;
+        else if (r.state == L"NG" || r.state == L"ERR") ++ng;
+        else ++na;
+        bool always = false;
+        for (const wchar_t* k : keep) always = always || (r.id == k);
+        if ((always || r.state == L"NG" || r.state == L"ERR") && items.size() < 120) items.push_back(&r);
+    }
+    const bool hasPush = !g.pushCurrent.empty();
+    std::string s = "REPORT|" + ReportField(pcName, 64) + "|" + Utf8Of(kVersion) + "|" + std::to_string(ok) + "|" + std::to_string(ng) + "|" +
+                    std::to_string(na) + "|" + std::to_string(items.size() + (hasPush ? 1 : 0)) + "\n";
+    for (const Row* r : items)
+        s += "I|" + ReportField(r->id, 64) + "|" + ReportField(r->state, 8) + "|" + ReportField(r->name, 120) + "|" + ReportField(r->current, 200) + "\n";
+    if (hasPush) s += "I|push|" + ReportField(g.pushState, 8) + "|自動で配られたファイル|" + ReportField(g.pushCurrent, 200) + "\n";
+    return s;
+}
+
+// 数字だけの版を比べる（a が新しければ true）
+bool VersionNewer(const std::string& a, const std::string& b) {
+    if (a.empty() || a.find_first_not_of("0123456789") != std::string::npos) return false;
+    if (b.empty()) return true;
+    if (a.size() != b.size()) return a.size() > b.size();
+    return a > b;
+}
+
+struct ReportJob {
+    HWND hwnd = nullptr;
+    share::TeacherInfo teacher;
+    std::string payload;
+    // 結果
+    bool sent = false, inspect = false, needPair = false, fetched = false, fetchFailed = false;
+    std::string printersVersion, pushId;  // pushId：受け取るべき、自動で配られたものの番号
+    std::wstring message;
+};
+
+DWORD WINAPI ReportThread(LPVOID param) {
+    ReportJob* job = static_cast<ReportJob*>(param);
+    share::ReportReply reply;
+    job->sent = share::SendReport(job->teacher, job->payload, reply);
+    if (job->sent) {
+        job->inspect = reply.inspect;
+        job->printersVersion = reply.printersVersion;
+        // 自動で配られているもの：登録した先生の PC で、まだ受け取っていない新しい番号なら
+        if (!reply.pushId.empty() && job->teacher.paired && reply.fingerprint == job->teacher.fingerprint &&
+            VersionNewer(reply.pushId, share::LastPushId(job->teacher.fingerprint)))
+            job->pushId = reply.pushId;
+        if (!reply.printersVersion.empty()) {
+            if (!job->teacher.paired || reply.fingerprint != job->teacher.fingerprint) {
+                job->needPair = true;  // 配られているが、この先生の PC を登録していない
+            } else if (VersionNewer(reply.printersVersion, share::LocalPrintersVersion())) {
+                job->fetched = share::FetchPrinters(job->teacher, job->message);
+                job->fetchFailed = !job->fetched;
+            }
+        }
+    }
+    if (!PostMessageW(job->hwnd, WM_APP_REPORTDONE, 0, reinterpret_cast<LPARAM>(job))) delete job;
+    return 0;
+}
+
+void SendReportNow() {
+    if (g.reporting || share::IsServerRunning()) return;  // 先生用の窓を開いている PC（先生の PC）は報告しない
+    share::TeacherInfo t = share::GetTeacher();
+    if (!t.valid) return;
+    ReportJob* job = new ReportJob();
+    job->hwnd = g.hwnd;
+    job->teacher = t;
+    job->payload = BuildReportPayload();
+    HANDLE th = CreateThread(nullptr, 0, ReportThread, job, 0, nullptr);
+    if (!th) {
+        delete job;
+        return;
+    }
+    CloseHandle(th);
+    g.reporting = true;
+}
+
+// ---- 自動で配られたファイル（裏で受け取る。報告は止めない）
+struct PushJob {
+    HWND hwnd = nullptr;
+    share::TeacherInfo teacher;
+    std::string pushId;
+    share::PushResult result;
+    bool ok = false;
+    std::wstring message;
+};
+
+DWORD WINAPI PushThread(LPVOID param) {
+    PushJob* job = static_cast<PushJob*>(param);
+    job->ok = share::FetchPush(job->teacher, job->pushId, job->result, job->message);
+    if (!PostMessageW(job->hwnd, WM_APP_PUSHDONE, 0, reinterpret_cast<LPARAM>(job))) delete job;
+    return 0;
+}
+
+void StartPushFetch(const share::TeacherInfo& t, const std::string& pushId) {
+    if (g.pushing) return;
+    if (pushId == g.pushTriedId && g.pushTries >= 3) return;  // 同じ番号は 3 回まで（開いているファイルなどで、いつまでも繰り返さない）
+    if (pushId != g.pushTriedId) {
+        g.pushTriedId = pushId;
+        g.pushTries = 0;
+    }
+    ++g.pushTries;
+    PushJob* job = new PushJob();
+    job->hwnd = g.hwnd;
+    job->teacher = t;
+    job->pushId = pushId;
+    HANDLE th = CreateThread(nullptr, 0, PushThread, job, 0, nullptr);
+    if (!th) {
+        delete job;
+        return;
+    }
+    CloseHandle(th);
+    g.pushing = true;
+    g.pushState = L"NA";
+    g.pushCurrent = std::wstring(pushId.begin(), pushId.end()) + L"：受け取り中";
+    SetSummaryText(L"先生からファイルを受け取っています…", kAccent);
+}
+
+void FinishPush(PushJob* job) {
+    g.pushing = false;
+    const std::wstring id(job->pushId.begin(), job->pushId.end());
+    const std::wstring folder = job->result.folder;
+    const bool ok = job->ok;
+    const std::wstring message = job->message;
+    const int received = job->result.received;
+    g.pushState = ok ? L"OK" : L"NG";
+    g.pushCurrent = id + (ok ? L"：受け取り済み（" + std::to_wstring(received) + L" 個）" : L"：" + message);
+    delete job;
+    SendReportNow();  // 先生用に、受け取った結果を知らせる
+    if (!ok) {
+        SetSummaryText(L"先生からのファイル：" + message + (g.pushTries < 3 ? L"（あとでもう一度受け取ります）" : L""), kNg);
+        return;
+    }
+    SetSummaryText(message + L"　受け取った場所：" + folder, kOk);
+    // 作業中・ほかの窓を開いているときは、知らせの窓を出さない（下の行の知らせだけ）
+    if (g.running || !IsWindowEnabled(g.hwnd)) return;
+    std::wstring ask = message + L"\n\n受け取った場所：" + folder + L"\n\nフォルダーを開きますか？";
+    if (MessageBoxW(g.hwnd, ask.c_str(), kAppName, MB_YESNO | MB_ICONINFORMATION) == IDYES)
+        ShellExecuteW(g.hwnd, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void FinishReport(ReportJob* job) {
+    g.reporting = false;
+    const share::TeacherInfo t = job->teacher;
+    const bool inspect = job->inspect, needPair = job->needPair;
+    const std::string pushId = job->pushId;
+    if (job->fetched) {
+        SetSummaryText(job->message, kOk);
+    } else if (job->fetchFailed && job->printersVersion != g.printersFailVer) {
+        g.printersFailVer = job->printersVersion;  // 同じ版の失敗は 1 回だけ知らせる
+        SetSummaryText(L"プリンターの設定：" + job->message, kNg);
+    }
+    delete job;
+    if (!pushId.empty()) StartPushFetch(t, pushId);
+    // 先生用から頼まれた点検：5 分に 1 回まで（偽の「先生用」に繰り返し頼まれても重くならないように）
+    if (inspect && !g.running && (g.remoteInspectTick == 0 || GetTickCount() - g.remoteInspectTick > 300000)) {
+        g.remoteInspectTick = GetTickCount();
+        StartInspection();
+    }
+    // プリンターの設定が配られているのに、この先生の PC を登録していない：1 回だけ案内する（作業中・ほかの窓を開いているときは出さない）
+    if (needPair && !g.pairAsked && !g.running && IsWindowEnabled(g.hwnd)) {
+        g.pairAsked = true;
+        std::wstring ask = L"先生の PC（" + t.name +
+                           L"）が、プリンターの設定を配っています。\n\n受け取るには、この PC に先生の PC を登録します（1 回だけ。先生の画面の印を確かめ、合言葉を入れます）。\n\n今、登録しますか？";
+        if (MessageBoxW(g.hwnd, ask.c_str(), kAppName, MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            std::wstring msg;
+            const bool ok = share::PairInteractive(g.hwnd, t, msg);
+            if (!msg.empty()) MessageBoxW(g.hwnd, msg.c_str(), kAppName, MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+            if (ok) SendReportNow();  // すぐに受け取る
+        }
+    }
 }
 
 // ---------------------------------------------------------------- インターネットへのつながり
@@ -1166,7 +1379,7 @@ void ApplyProfileToggles() {
     g.toggleOn[0] = (ReadJsonString(p, L"office") == L"install");
     g.toggleOn[1] = (ReadJsonString(p, L"adobe") == L"install");
     g.appsAvailable = !ReadJsonString(p, L"ownAppsManifest").empty();
-    g.toggleOn[2] = g.appsAvailable;
+    g.toggleOn[2] = false;  // 独自アプリは初めはオフ（独自アプリのタブから入れるのが基本。淳さんの指定）
     for (HWND h : g.tog)
         if (h) InvalidateRect(h, nullptr, FALSE);
 }
@@ -1592,7 +1805,10 @@ bool IsSameOrUnder(const std::wstring& path, const std::wstring& base);
 // 起動時：Program Files に入っているときだけ、目録に新しい版があるかを裏で確かめる
 void StartUpdateCheck() {
     if (g.running) return;
-    if (!IsSameOrUnder(g.exeDir, InstallTarget())) return;  // 入れていない（開発・試験）ときは確かめない
+    if (!IsSameOrUnder(g.exeDir, InstallTarget())) {  // 入れていない（開発・試験）ときは確かめない
+        SetSummaryText(L"この場所（" + g.exeDir + L"）で動いているため、新しい版は確かめていません（Program Files に入れたアプリだけが確かめます）。", kMuted);
+        return;
+    }
     std::wstring profile = SelectedProfilePath();
     if (profile.empty() || ReadJsonString(profile, L"ownAppsManifest").empty()) return;
     std::wstring script = g.exeDir + L"\\scripts\\selfupdate_check.ps1";
@@ -2344,6 +2560,7 @@ void PaintApps(HDC dc, int width) {
         FillRect(dc, &sep, lb);
         DeleteObject(lb);
         std::wstring name = a.name + (a.self ? L"（このアプリ）" : L"");
+        if (a.self && !IsSameOrUnder(g.exeDir, InstallTarget())) name += L"　※ Program Files 以外で動いているため、自動の更新はしません";
         DrawTextAt(dc, name, m + S(42), y + S(8), g.fontBold, kInk);
         std::wstring info = L"入っている版：" + (a.installed.empty() ? std::wstring(L"入っていない") : L"v" + a.installed) + L"　　最新：v" + a.latest + L"　　";
         COLORREF stateColor = kMuted;
@@ -2592,7 +2809,7 @@ void CreateControls(HWND hwnd) {
                               nullptr);
     g.run = CreateWindowExW(0, WC_BUTTONW, L"点検する", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                             hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RUN)), g.inst, nullptr);
-    g.share = CreateWindowExW(0, WC_BUTTONW, L"配布サーバーになる", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10,
+    g.share = CreateWindowExW(0, WC_BUTTONW, L"先生用になる", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10,
                               10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SHARE)), g.inst, nullptr);
     g.oneclick = CreateWindowExW(0, WC_BUTTONW, L"まとめて実行", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10,
                                  10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_ONECLICK)), g.inst, nullptr);
@@ -2846,6 +3063,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 OnUpdateTimer();
                 return 0;
             }
+            if (wp == kTimerReport) {
+                SendReportNow();
+                return 0;
+            }
             break;
         case WM_NOTIFY: {
             NMHDR* h = reinterpret_cast<NMHDR*>(lp);
@@ -2876,6 +3097,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_APP_STARTUP:
+            SetTimer(hwnd, kTimerReport, 30000, nullptr);  // 先生用への報告（先生用が見つかったときだけ送る）
             ShowUpdateResult();
             CheckSacOnStartup();
             if (!g.running &&
@@ -2895,6 +3117,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_APP_REPORTDONE:
+            FinishReport(reinterpret_cast<ReportJob*>(lp));
+            return 0;
+        case WM_APP_PUSHDONE:
+            FinishPush(reinterpret_cast<PushJob*>(lp));
+            return 0;
         case WM_APP_APPSTATUS: {
             delete reinterpret_cast<JobResult*>(lp);
             FinishAppsStatus();
@@ -3255,6 +3483,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                                                GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     wc.lpszClassName = kClassName;
     RegisterClassExW(&wc);
+    g.inst = inst;
 
     g.dpi = SystemDpi();
     RECT work{};
@@ -3267,6 +3496,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     std::wstring title = std::wstring(kAppName) + L"（v" + kVersion + L"）";
     HWND hwnd = CreateWindowExW(0, kClassName, title.c_str(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, wx, wy, ww, wh,
                                 nullptr, nullptr, inst, nullptr);
+    if (hwnd) {  // タスクバー・Alt+Tab のアイコン（クラスのアイコンに加えて、窓にも直接設定する）
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(LoadImageW(inst, MAKEINTRESOURCEW(kIconId), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR)));
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(LoadImageW(inst, MAKEINTRESOURCEW(kIconId), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR)));
+    }
     if (!hwnd) return 1;
 
     if (!sample.empty()) {

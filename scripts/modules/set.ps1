@@ -307,11 +307,15 @@ function Invoke-ApplyAll {
         @('Set-TaskbarWidgets',  'タスクバーのウィジェット'),
         @('Set-TaskbarSearch',   'タスクバーの検索'),
         @('Set-StartRecent',     'スタートの「最近使用」'),
+        @('Set-WindowsAds',      'Windows の広告・おすすめ・ヒント'),
+        @('Set-Copilot',         'Copilot'),
+        @('Set-EdgeFirstRun',    'Edge の最初の設定の画面'),
         @('Set-Notifications',   '通知（右下のお知らせ）'),
         @('Set-OneDriveStartup', 'OneDrive の自動起動'),
         @('Set-VolumeMute',      '音量'),
         @('Set-WindowsUpdate',   'Windows Update'),
-        @('Set-DeliveryOptimization', '更新の LAN での分け合い')
+        @('Set-DeliveryOptimization', '更新の LAN での分け合い'),
+        @('Set-Printers',        'プリンター（先生用から受け取る）')
     )
     $script:NeedExplorerRestart = $false
     foreach ($s in $steps) {

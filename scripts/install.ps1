@@ -78,11 +78,14 @@ try {
         if (-not $dir) { continue }
         $lnk = $ws.CreateShortcut((Join-Path $dir 'まなびと講習準備.lnk'))
         $lnk.TargetPath = $exe
+        $lnk.IconLocation = $exe + ',0'   # アイコンの場所をはっきり書く（前の版のアイコンを覚えていても入れ替わるように）
         $lnk.WorkingDirectory = $dst
         $lnk.Description = 'まなびと講習準備'
         $lnk.Save()
     }
     $log.Add('ショートカット: デスクトップ（全員）・スタートメニューの「まなびとツール」')
+    # Windows のアイコンの一時保存を更新する（古いアイコン＝白い紙のままにならないように）
+    try { Start-Process -FilePath (Join-Path $env:WINDIR 'System32\ie4uinit.exe') -ArgumentList '-show' -WindowStyle Hidden -Wait -ErrorAction Stop } catch { }
 
     # ファイアウォール：授業ファイルの配布サーバーの受け口（このアプリだけ、プライベートとドメインのネットワークだけ）
     $rule = 'まなびと講習準備（授業ファイルの配布）'

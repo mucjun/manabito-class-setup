@@ -859,6 +859,7 @@ function New-Shortcut {
     $ws = New-Object -ComObject WScript.Shell
     $lnk = $ws.CreateShortcut((Join-Path $desk ($Name + '.lnk')))
     $lnk.TargetPath = $Target
+    $lnk.IconLocation = $Target + ',0'
     $lnk.WorkingDirectory = Split-Path -Parent $Target
     $lnk.Save()
 }
@@ -940,8 +941,12 @@ function New-ToolsShortcut {
     $ws = New-Object -ComObject WScript.Shell
     $lnk = $ws.CreateShortcut((Join-Path $dir ($Name + '.lnk')))
     $lnk.TargetPath = $Target
+    $lnk.IconLocation = $Target + ',0'
     $lnk.WorkingDirectory = Split-Path -Parent $Target
     $lnk.Save()
+    # スタートメニューの直下に同じ名前のショートカット（前の作り方）があれば消す
+    $old = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) ($Name + '.lnk')
+    if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue }
 }
 
 function Install-OwnApps {

@@ -50,4 +50,43 @@ void Release(unsigned session);
 // 受け取るフォルダー（前回選んだもの。初期値はドキュメント\授業ファイル）
 std::wstring DestFolder();
 
+// ---- 先生用（v0.17.0）：受講生の PC からの報告・先生の PC の登録・プリンターの設定
+//   受→配（TCP）REPORT|PC名|版|OK数|NG数|対象外数|行数 のあと I|Id|判定|項目|今の状態  ← OK|点検を頼むか|プリンターの版|先生の印|配る番号
+//   受→配（TCP）PAIR|合言葉|PC名  ← KEY|公開の鍵（16 進）|先生の PC 名（合言葉が要る。失敗の回数は授業ファイルと同じく制限）
+//   受→配（TCP）PRINTERS  ← PRN|版|長さ|署名（16 進）のあと本文（登録した鍵で署名を確かめる）
+//   配→受（UDP）の答えの続き  |printers=版|0|teacher=先生の印（16 文字）|0
+
+struct TeacherInfo {
+    bool valid = false;   // 30 秒以内に見えている
+    bool paired = false;  // この先生の PC を登録している
+    std::wstring name, ip;
+    int port = 0;
+    std::string printersVersion, fingerprint;
+};
+struct ReportReply {
+    bool ok = false, inspect = false;
+    std::string printersVersion, fingerprint, pushId;  // pushId：自動で配っているものの番号（無ければ空）
+};
+struct PushResult {
+    int received = 0, failed = 0;
+    unsigned long long bytes = 0;
+    std::wstring folder;
+};
+
+TeacherInfo GetTeacher();
+// 報告を送る（ネットワークを使うので、画面のスレッド以外から）
+bool SendReport(const TeacherInfo& t, const std::string& payload, ReportReply& reply);
+// 先生の PC を登録する（画面のスレッドから。印の確かめと合言葉を聞く）
+bool PairInteractive(HWND owner, const TeacherInfo& t, std::wstring& message);
+// プリンターの設定を受け取る（画面のスレッド以外から）。登録した鍵で署名を確かめてから printers.txt に書く
+bool FetchPrinters(const TeacherInfo& t, std::wstring& message);
+// この PC にあるプリンターの設定の版（無ければ空）
+std::string LocalPrintersVersion();
+// 自動で配られたファイルを受け取る（画面のスレッド以外から）。署名した一覧と SHA-256 が合ったものだけを置く
+//   受→配（TCP）PUSHMAN  ← PSH|番号|長さ|署名 のあと一覧（m|番号|個数|合計 のあと f|相対パス|大きさ|SHA-256）
+//   受→配（TCP）PUSH|番号|PC名  ← OK|番号、そのあと PGET|i ← DATA|大きさ のあと中身、最後に DONE|できた数|できなかった数
+bool FetchPush(const TeacherInfo& t, const std::string& pushId, PushResult& result, std::wstring& message);
+// この先生の PC から受け取り終えた、自動で配られたものの番号（無ければ空）
+std::string LastPushId(const std::string& fingerprint);
+
 }  // namespace share

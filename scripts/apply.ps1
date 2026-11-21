@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($LogFile) { try { Start-Transcript -LiteralPath $LogFile -Force | Out-Null } catch { } }
 
-foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'set')) {
+foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'quiet', 'printers', 'set')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 
