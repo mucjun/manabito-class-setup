@@ -70,7 +70,11 @@ try {
     # ショートカット（全員のデスクトップとスタートメニュー）
     $exe = Join-Path $dst 'ManabitoClassSetup.exe'
     $ws = New-Object -ComObject WScript.Shell
-    foreach ($dir in @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))) {
+    $tools = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'まなびとツール'
+    if (-not (Test-Path -LiteralPath $tools)) { New-Item -ItemType Directory -Path $tools -Force | Out-Null }
+    $oldStart = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'まなびと講習準備.lnk'   # v0.15 までの場所
+    if (Test-Path -LiteralPath $oldStart) { Remove-Item -LiteralPath $oldStart -Force -ErrorAction SilentlyContinue }
+    foreach ($dir in @([Environment]::GetFolderPath('CommonDesktopDirectory'), $tools)) {
         if (-not $dir) { continue }
         $lnk = $ws.CreateShortcut((Join-Path $dir 'まなびと講習準備.lnk'))
         $lnk.TargetPath = $exe
@@ -78,7 +82,7 @@ try {
         $lnk.Description = 'まなびと講習準備'
         $lnk.Save()
     }
-    $log.Add('ショートカット: デスクトップ（全員）・スタートメニュー（全員）')
+    $log.Add('ショートカット: デスクトップ（全員）・スタートメニューの「まなびとツール」')
 
     # ファイアウォール：授業ファイルの配布サーバーの受け口（このアプリだけ、プライベートとドメインのネットワークだけ）
     $rule = 'まなびと講習準備（授業ファイルの配布）'

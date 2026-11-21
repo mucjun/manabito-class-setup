@@ -2,10 +2,11 @@
 #include <windows.h>
 
 1 24 "app.manifest"
+101 ICON "app.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,15,0,0
- PRODUCTVERSION 0,15,0,0
+ FILEVERSION 0,16,0,0
+ PRODUCTVERSION 0,16,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -18,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "まなびとステーション"
             VALUE "FileDescription", "まなびと講習準備"
-            VALUE "FileVersion", "0.15.0"
+            VALUE "FileVersion", "0.16.0"
             VALUE "InternalName", "ManabitoClassSetup"
             VALUE "LegalCopyright", "© 2026 まなびとステーション"
             VALUE "OriginalFilename", "ManabitoClassSetup.exe"
             VALUE "ProductName", "まなびと講習準備"
-            VALUE "ProductVersion", "0.15.0"
+            VALUE "ProductVersion", "0.16.0"
         END
     END
     BLOCK "VarFileInfo"

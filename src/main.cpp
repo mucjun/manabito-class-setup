@@ -39,7 +39,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.15.0";
+const wchar_t kVersion[] = L"0.16.0";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -69,6 +69,10 @@ enum : int {
     IDC_RUN,
     IDC_ONECLICK,
     IDC_SHARE,
+    IDC_TAB0,         // タブ：講習の準備
+    IDC_TAB1,         // タブ：独自アプリ
+    IDC_APPS_ALL,     // チェックしたものをまとめてセットアップ
+    IDC_APPS_RELOAD,  // 一覧を読み直す
     IDC_APPLY,
     IDC_CLEAN,
     IDC_LOGS,
@@ -85,6 +89,11 @@ const UINT WM_APP_DONE = WM_APP + 1;
 const UINT WM_APP_APPLIED = WM_APP + 2;   // wParam: 0=そろえる 1=スマート アプリ コントロールをオフ
 const UINT WM_APP_STARTUP = WM_APP + 3;
 const UINT WM_APP_UPDCHECK = WM_APP + 4;  // 新しい版の確認が終わった
+const UINT WM_APP_APPSTATUS = WM_APP + 6;  // 独自アプリの一覧を読み終えた
+const UINT WM_APP_WUCHECK = WM_APP + 7;    // Windows Update の確認が終わった
+const int kIdAppCheck = 6000;  // 独自アプリの行のチェックボックス（+ 行の番号）
+const int kIdAppSetup = 6100;  // 独自アプリの行の［セットアップ］（+ 行の番号）
+const int kIconId = 101;       // res\app.rc のアイコン
 const UINT WM_APP_SHARE_FOUND = WM_APP + 5;  // LAN 内に配布サーバーを見つけた（lParam = share::Offer*）
 const UINT_PTR kTimerUpdate = 2;
 
@@ -169,6 +178,24 @@ struct App {
     std::wstring deployTsv, deployLog, deployStatus, deployCancel, deployShown;
     bool oneClick = false;  // 今の準備が［まとめて実行］か
     bool updating = false;  // 新しい版に入れ替える準備中
+    // タブ（0 = 講習の準備、1 = 独自アプリ）
+    int tab = 0;
+    HWND tabBtn[2] = {nullptr, nullptr};
+    // 独自アプリのタブ
+    struct AppItem {
+        std::wstring name, exe, installed, latest, state, url, sha;
+        bool self = false;
+        HWND check = nullptr, setup = nullptr;
+    };
+    std::vector<AppItem> apps;
+    HWND appsAll = nullptr, appsReload = nullptr;
+    std::wstring appsOut, appsError;
+    bool appsLoading = false, appsLoaded = false, appsDeploy = false;
+    int appsTop = 0, appsButtonsTop = 0;
+    struct PendingSelf {
+        bool on = false;
+        std::wstring ver, url, sha;
+    } pendingSelf;  // 独自アプリを入れ終えたあとで、このアプリ自身を更新する
     std::wstring updCheckOut, updStatus, updVersion;
     DWORD updStartTick = 0;
     std::vector<ProgressItem> progress;  // 作業ごとの行（準備中と、終わった直後に表示）
@@ -638,6 +665,16 @@ void SetBusy(bool busy) {
         EnableWindow(h, !busy);
         InvalidateRect(h, nullptr, FALSE);
     }
+    for (HWND h : {g.appsAll, g.appsReload}) {
+        if (!h) continue;
+        EnableWindow(h, !busy);
+        InvalidateRect(h, nullptr, FALSE);
+    }
+    for (auto& a : g.apps) {
+        const bool selfLatest = a.self && a.state != L"old";
+        EnableWindow(a.check, !busy && !selfLatest);
+        EnableWindow(a.setup, !busy && !selfLatest);
+    }
     // 準備の最中は［時間を指定して実行］が［取り消す］になる
     if (g.runAt) {
         EnableWindow(g.runAt, !busy || (g.deploying && !g.deployCancelRequested));
@@ -745,8 +782,11 @@ std::wstring CurrentUserName() {
     return std::wstring();
 }
 
+bool ConfirmWindowsUpdate();  // 後で定義
+
 void StartApply() {
     if (g.running) return;
+    if (!ConfirmWindowsUpdate()) return;
     std::wstring script = g.exeDir + L"\\scripts\\apply.ps1";
     if (!FileExists(script)) {
         MessageBoxW(g.hwnd, (L"そろえる部品が見つかりません。\n\n" + script).c_str(), kAppName, MB_OK | MB_ICONWARNING);
@@ -1169,11 +1209,16 @@ std::wstring StartLabel(const SYSTEMTIME& when) {
     return buf;
 }
 
-void StartDeploy(bool scheduled) {
+// onlyApps：独自アプリのタブから、選んだアプリだけを入れるとき（Office・Adobe は触らない）
+void StartDeploy(bool scheduled, const std::vector<std::wstring>* onlyApps = nullptr) {
     if (g.running) return;
     RefreshInstalled();
     bool office = g.toggleOn[0], adobe = g.toggleOn[1], apps = g.toggleOn[2] && g.appsAvailable;
     bool removeOffice = WillRemove(0), removeAdobe = WillRemove(1);
+    if (onlyApps) {
+        office = adobe = removeOffice = removeAdobe = false;
+        apps = true;
+    }
     if (!office && !adobe && !apps && !removeOffice && !removeAdobe) {
         MessageBoxW(g.hwnd, L"準備するものを選んでください（Office・Adobe CC・独自アプリのトグルをオンにします）。", kAppName,
                     MB_OK | MB_ICONINFORMATION);
@@ -1228,7 +1273,12 @@ void StartDeploy(bool scheduled) {
             items += L"　※ Adobe のインストーラーは、サインインなどの画面を出して待つことがあります。"
                      L"人がいるときに［今すぐ実行］で行うのがおすすめです（15 分進まなければ打ち切ります）。\n";
     }
-    if (apps) items += L"・独自アプリの最新版の入手と展開（同じ版なら何もしません）\n";
+    if (apps && onlyApps) {
+        items += L"・次の独自アプリの最新版の入手と展開（同じ版なら何もしません）\n";
+        for (const auto& n : *onlyApps) items += L"　　" + n + L"\n";
+    } else if (apps) {
+        items += L"・独自アプリの最新版の入手と展開（同じ版なら何もしません）\n";
+    }
     if ((office && !g.installed[0]) || (adobe && !g.installed[1])) {
         items += L"\n【時間の目安】ダウンロードの量と回線の速さで決まります（インストールの時間は別にかかります）\n";
         if (office && !g.installed[0])
@@ -1271,6 +1321,12 @@ void StartDeploy(bool scheduled) {
     params += std::wstring(L" -Office ") + (office ? L"1" : removeOffice ? L"2" : L"0") + L" -Adobe " +
               (adobe ? L"1" : removeAdobe ? L"2" : L"0") + L" -OwnApps " + (apps ? L"1" : L"0");
     if (!startArg.empty()) params += L" -StartAt \"" + startArg + L"\"";
+    if (onlyApps) {
+        std::wstring list;
+        for (const auto& n : *onlyApps) list += (list.empty() ? L"" : L"|") + n;
+        params += L" -OnlyApps \"" + list + L"\"";
+    }
+    g.appsDeploy = (onlyApps != nullptr);
 
     ApplyJob* job = new ApplyJob();
     job->exe = PowerShellPath();
@@ -1304,6 +1360,7 @@ void StartDeploy(bool scheduled) {
 // ［まとめて実行］：設定をそろえる → アプリの削除とインストール（トグルのとおり）→ 履歴を消す、を 1 回の管理者の確認で
 void StartOneClick() {
     if (g.running) return;
+    if (!ConfirmWindowsUpdate()) return;
     std::wstring script = g.exeDir + L"\\scripts\\oneclick.ps1";
     if (!FileExists(script)) {
         MessageBoxW(g.hwnd, (L"まとめて実行の部品が見つかりません。\n\n" + script).c_str(), kAppName, MB_OK | MB_ICONWARNING);
@@ -1489,6 +1546,8 @@ void OnDeployTimer() {
     }
 }
 
+void AfterDeployForApps();  // 独自アプリのタブ（後で定義）
+
 void FinishDeploy(JobResult* res) {
     KillTimer(g.hwnd, kTimerDeploy);
     // 最後の状況を読んで、作業ごとの行は結果として残す（次の準備か、手で点検するまで）
@@ -1522,6 +1581,7 @@ void FinishDeploy(JobResult* res) {
     const bool wasOneClick = g.oneClick;
     g.oneClick = false;
     FinishElevated(res, g.deployTsv, g.deployLog, wasOneClick ? t1 : t);
+    AfterDeployForApps();
 }
 
 // ---------------------------------------------------------------- このアプリ自身の更新（目録 apps.json に載せた新しい版）
@@ -1697,6 +1757,227 @@ void ShowUpdateResult() {
     }
 }
 
+// ---------------------------------------------------------------- Windows Update の確認（起動時に裏で）
+
+std::wstring WuStatusPath() { return AppDataDir() + L"\\wu_status.txt"; }
+
+void StartWuCheck() {
+    std::wstring script = g.exeDir + L"\\scripts\\wu_check.ps1";
+    if (!FileExists(script)) return;
+    SHCreateDirectoryExW(nullptr, AppDataDir().c_str(), nullptr);
+    Job* job = new Job();
+    job->cmd = L"\"" + PowerShellPath() + L"\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + L"\" -OutFile \"" +
+               WuStatusPath() + L"\"";
+    job->outLog = AppDataDir() + L"\\wu_check.log";
+    job->hwnd = g.hwnd;
+    job->doneMsg = WM_APP_WUCHECK;
+    HANDLE th = CreateThread(nullptr, 0, JobThread, job, 0, nullptr);
+    if (th) CloseHandle(th);
+    else delete job;
+}
+
+std::vector<std::wstring> SplitBarW(const std::wstring& line) {
+    std::vector<std::wstring> f;
+    size_t a0 = 0;
+    for (;;) {
+        size_t b0 = line.find(L'|', a0);
+        f.push_back(line.substr(a0, b0 == std::wstring::npos ? std::wstring::npos : b0 - a0));
+        if (b0 == std::wstring::npos) break;
+        a0 = b0 + 1;
+    }
+    return f;
+}
+
+// ［設定をそろえる］［まとめて実行］の前：今日確かめた結果で、まだ入っていない更新があれば知らせる。続けるなら true
+bool ConfirmWindowsUpdate() {
+    std::string bytes;
+    if (!ReadAllBytes(WuStatusPath(), bytes)) return true;
+    std::wstring t = DecodeText(bytes);
+    std::wstring first = t.substr(0, t.find(L'\n'));
+    while (!first.empty() && (first.back() == L'\r' || first.back() == L' ')) first.pop_back();
+    std::vector<std::wstring> f = SplitBarW(first);
+    if (f.size() < 4 || f[0] != L"done") return true;
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t today[16];
+    wsprintfW(today, L"%04d/%02d/%02d", now.wYear, now.wMonth, now.wDay);
+    if (f[1].rfind(today, 0) != 0) return true;  // 今日の結果でなければ聞かない
+    int total = _wtoi(f[2].c_str()), sec = _wtoi(f[3].c_str());
+    if (total <= 0) return true;
+    std::wstring content = L"Windows Update に、まだ入っていない更新が " + std::to_wstring(total) + L" 件あります（うちセキュリティ " +
+                           std::to_wstring(sec) + L" 件。" + f[1] + L" に確認）。\n最新の状態にしてからそろえることをおすすめします。";
+    TASKDIALOG_BUTTON buttons[] = {
+        {7101, L"先に更新する\nWindows Update の画面を開きます。更新して再起動したあと、もう一度実行してください。"},
+        {7102, L"このまま続ける"},
+    };
+    TASKDIALOGCONFIG c{};
+    c.cbSize = sizeof(c);
+    c.hwndParent = g.hwnd;
+    c.hInstance = g.inst;
+    c.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    c.pszWindowTitle = kAppName;
+    c.pszMainIcon = TD_WARNING_ICON;
+    c.pszMainInstruction = L"Windows が最新の状態ではありません";
+    c.pszContent = content.c_str();
+    c.cButtons = 2;
+    c.pButtons = buttons;
+    c.nDefaultButton = 7101;
+    int button = 0;
+    if (FAILED(TaskDialogIndirect(&c, &button, nullptr, nullptr)))
+        button = (MessageBoxW(g.hwnd, (content + L"\n\nこのまま続けますか？").c_str(), kAppName, MB_YESNO | MB_ICONWARNING) == IDYES) ? 7102 : 7101;
+    if (button == 7102) return true;
+    if (button == 7101) ShellExecuteW(g.hwnd, L"open", L"ms-settings:windowsupdate", nullptr, nullptr, SW_SHOWNORMAL);
+    return false;
+}
+
+// ---------------------------------------------------------------- 独自アプリのタブ
+
+void ShowTab(int t);
+
+void StartAppsStatus() {
+    if (g.appsLoading) return;
+    std::wstring script = g.exeDir + L"\\scripts\\apps_status.ps1";
+    std::wstring profile = SelectedProfilePath();
+    if (!FileExists(script) || profile.empty()) {
+        g.appsError = L"一覧を読む部品か、プロファイルが見つかりません。";
+        InvalidateRect(g.hwnd, nullptr, FALSE);
+        return;
+    }
+    EnsureLogDir();
+    g.appsOut = g.logDir + L"\\独自アプリの一覧_" + Timestamp() + L".txt";
+    Job* job = new Job();
+    job->cmd = L"\"" + PowerShellPath() + L"\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + L"\" -ProfilePath \"" +
+               profile + L"\" -CurrentVersion " + kVersion + L" -OutFile \"" + g.appsOut + L"\"";
+    job->outLog = g.appsOut + L".log";
+    job->hwnd = g.hwnd;
+    job->doneMsg = WM_APP_APPSTATUS;
+    HANDLE th = CreateThread(nullptr, 0, JobThread, job, 0, nullptr);
+    if (!th) {
+        delete job;
+        return;
+    }
+    CloseHandle(th);
+    g.appsLoading = true;
+    g.appsError.clear();
+    InvalidateRect(g.hwnd, nullptr, FALSE);
+}
+
+void FinishAppsStatus() {
+    g.appsLoading = false;
+    g.appsLoaded = true;
+    for (auto& a : g.apps) {
+        if (a.check) DestroyWindow(a.check);
+        if (a.setup) DestroyWindow(a.setup);
+    }
+    g.apps.clear();
+    std::string bytes;
+    if (!ReadAllBytes(g.appsOut, bytes)) {
+        g.appsError = L"一覧を読めませんでした。";
+    } else {
+        std::wstring t = DecodeText(bytes);
+        size_t pos = 0;
+        while (pos < t.size()) {
+            size_t nl = t.find(L'\n', pos);
+            std::wstring line = t.substr(pos, nl == std::wstring::npos ? std::wstring::npos : nl - pos);
+            pos = nl == std::wstring::npos ? t.size() : nl + 1;
+            while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
+            std::vector<std::wstring> f = SplitBarW(line);
+            if (f.size() >= 2 && f[0] == L"error") g.appsError = f[1];
+            if (f.size() < 8 || f[0] != L"app") continue;
+            App::AppItem it;
+            it.name = f[1];
+            it.exe = f[2];
+            it.installed = f[3];
+            it.latest = f[4];
+            it.state = f[5];
+            it.url = f[6];
+            it.sha = f[7];
+            it.self = (_wcsicmp(it.exe.c_str(), L"ManabitoClassSetup.exe") == 0);
+            g.apps.push_back(it);
+        }
+    }
+    for (size_t i = 0; i < g.apps.size() && i < 90; ++i) {
+        auto& a = g.apps[i];
+        a.check = CreateWindowExW(0, WC_BUTTONW, L"", WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 10, 10, g.hwnd,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdAppCheck + static_cast<int>(i))), g.inst, nullptr);
+        a.setup = CreateWindowExW(0, WC_BUTTONW, a.state == L"same" ? L"入れ直す" : L"セットアップ", WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+                                  0, 0, 10, 10, g.hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdAppSetup + static_cast<int>(i))),
+                                  g.inst, nullptr);
+        SendMessageW(a.setup, WM_SETFONT, reinterpret_cast<WPARAM>(g.font), FALSE);
+        if (a.state == L"old" || a.state == L"none") SendMessageW(a.check, BM_SETCHECK, BST_CHECKED, 0);  // 入れるべきものに初めから印
+        const bool selfLatest = a.self && a.state != L"old";
+        EnableWindow(a.check, !g.running && !selfLatest);
+        EnableWindow(a.setup, !g.running && !selfLatest);  // このアプリは、最新なら入れ直さない（更新は起動時にも確かめる）
+    }
+    ShowTab(g.tab);
+}
+
+// 選んだ行をセットアップする（ほかのアプリを先に、このアプリ自身は最後に更新する）
+void SetupApps(const std::vector<size_t>& idx) {
+    if (g.running) return;
+    std::vector<std::wstring> names;
+    const App::AppItem* self = nullptr;
+    for (size_t i : idx) {
+        if (i >= g.apps.size()) continue;
+        if (g.apps[i].self) self = &g.apps[i];
+        else names.push_back(g.apps[i].name);
+    }
+    if (names.empty() && !self) {
+        MessageBoxW(g.hwnd, L"セットアップするアプリにチェックを付けてください。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    g.pendingSelf = App::PendingSelf();
+    const bool selfNeeded = self && (self->state == L"old");
+    if (self && !selfNeeded && names.empty()) {
+        MessageBoxW(g.hwnd, L"まなびと講習準備は、最新の版です。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (selfNeeded) {
+        g.pendingSelf.on = true;
+        g.pendingSelf.ver = self->latest;
+        g.pendingSelf.url = self->url;
+        g.pendingSelf.sha = self->sha;
+    }
+    if (!names.empty()) {
+        StartDeploy(false, &names);
+        if (!g.running) g.pendingSelf = App::PendingSelf();  // 取りやめた
+        return;
+    }
+    App::PendingSelf p = g.pendingSelf;
+    g.pendingSelf = App::PendingSelf();
+    StartSelfUpdate(p.ver, p.url, p.sha);
+}
+
+// 準備が終わったとき：独自アプリのタブから始めたものなら一覧を読み直し、このアプリ自身の更新が控えていれば始める
+void AfterDeployForApps() {
+    if (!g.appsDeploy) return;
+    g.appsDeploy = false;
+    if (g.pendingSelf.on) {
+        App::PendingSelf p = g.pendingSelf;
+        g.pendingSelf = App::PendingSelf();
+        StartSelfUpdate(p.ver, p.url, p.sha);
+        return;
+    }
+    StartAppsStatus();
+}
+
+void ShowTab(int t) {
+    g.tab = t;
+    const int prep = (t == 0) ? SW_SHOW : SW_HIDE, apps = (t == 1) ? SW_SHOW : SW_HIDE;
+    for (HWND h : {g.combo, g.oneclick, g.run, g.apply, g.clean, g.logs, g.tog[0], g.tog[1], g.tog[2], g.runNow, g.runAt, g.timePick, g.list, g.detail})
+        if (h) ShowWindow(h, prep);
+    for (HWND h : {g.appsAll, g.appsReload})
+        if (h) ShowWindow(h, apps);
+    for (auto& a : g.apps) {
+        ShowWindow(a.check, apps);
+        ShowWindow(a.setup, apps);
+    }
+    for (HWND h : g.tabBtn)
+        if (h) InvalidateRect(h, nullptr, FALSE);
+    if (t == 1 && !g.appsLoaded && !g.appsLoading) StartAppsStatus();
+    Layout();
+}
+
 // ---------------------------------------------------------------- スマート アプリ コントロール
 
 void StartSacOff() {
@@ -1862,9 +2143,30 @@ void Layout() {
     GetClientRect(g.hwnd, &rc);
     const int W = rc.right, H = rc.bottom;
     const int m = S(20);
-    g.ctrlTop = S(62);
     g.ctrlHeight = S(38);
     MoveWindow(g.share, W - m - S(190), S(14), S(190), S(34), TRUE);  // 右上：配布サーバーになる
+    // タブ（タイトルの下）
+    MoveWindow(g.tabBtn[0], m, S(56), S(150), S(36), TRUE);
+    MoveWindow(g.tabBtn[1], m + S(154), S(56), S(150), S(36), TRUE);
+    g.ctrlTop = S(108);
+    if (g.tab == 1) {
+        // 独自アプリ：見出しの下に 1 アプリ 1 行（チェック・名前と版・［セットアップ］）
+        g.appsTop = g.ctrlTop + S(34);
+        const int rowH = S(60);
+        for (size_t i = 0; i < g.apps.size(); ++i) {
+            const int y = g.appsTop + static_cast<int>(i) * rowH;
+            MoveWindow(g.apps[i].check, m + S(6), y + S(18), S(24), S(24), TRUE);
+            MoveWindow(g.apps[i].setup, W - m - S(150), y + S(11), S(150), S(38), TRUE);
+        }
+        g.appsButtonsTop = g.appsTop + static_cast<int>(std::max<size_t>(g.apps.size(), 1)) * rowH + S(14);
+        MoveWindow(g.appsAll, m, g.appsButtonsTop, S(320), g.ctrlHeight, TRUE);
+        MoveWindow(g.appsReload, m + S(332), g.appsButtonsTop, S(160), g.ctrlHeight, TRUE);
+        g.summaryTop = g.appsButtonsTop + g.ctrlHeight + S(16);
+        g.progressTop = g.summaryTop + S(30);
+        g.progressHeight = g.progress.empty() ? 0 : static_cast<int>(g.progress.size()) * S(46) + S(10);
+        InvalidateRect(g.hwnd, nullptr, FALSE);
+        return;
+    }
     int x = m + S(132);
     RECT cr;
     MoveWindow(g.combo, x, g.ctrlTop, S(190), S(300), TRUE);
@@ -2023,6 +2325,39 @@ void PaintProgress(HDC dc, int width) {
     }
 }
 
+// 独自アプリのタブの文字（見出し・各行の名前と版）
+void PaintApps(HDC dc, int width) {
+    const int m = S(20);
+    std::wstring head = L"独自アプリ　―　一覧は GitHub の目録から読んでいます。チェックしたものを、まとめてセットアップできます。";
+    if (g.appsLoading) head = L"独自アプリ　―　一覧を読んでいます…";
+    DrawTextAt(dc, head, m, g.ctrlTop + S(4), g.fontBold, kInk);
+    if (!g.appsError.empty() && g.apps.empty()) {
+        DrawTextAt(dc, L"一覧を読めませんでした：" + g.appsError, m, g.appsTop + S(10), g.font, kNg);
+        return;
+    }
+    const int rowH = S(60);
+    for (size_t i = 0; i < g.apps.size(); ++i) {
+        const auto& a = g.apps[i];
+        const int y = g.appsTop + static_cast<int>(i) * rowH;
+        RECT sep{m, y + rowH - 1, width - m, y + rowH};
+        HBRUSH lb = CreateSolidBrush(kLine);
+        FillRect(dc, &sep, lb);
+        DeleteObject(lb);
+        std::wstring name = a.name + (a.self ? L"（このアプリ）" : L"");
+        DrawTextAt(dc, name, m + S(42), y + S(8), g.fontBold, kInk);
+        std::wstring info = L"入っている版：" + (a.installed.empty() ? std::wstring(L"入っていない") : L"v" + a.installed) + L"　　最新：v" + a.latest + L"　　";
+        COLORREF stateColor = kMuted;
+        std::wstring stateText;
+        if (a.state == L"old") { stateText = L"新しい版があります"; stateColor = kAccent; }
+        else if (a.state == L"none") { stateText = L"入っていません"; stateColor = kAccent; }
+        else if (a.state == L"same") { stateText = L"最新です"; stateColor = kOk; }
+        else { stateText = L"入っている版のほうが新しい"; }
+        int iw = 0;
+        DrawTextAt(dc, info, m + S(42), y + S(34), g.fontSmall, kMuted, &iw);
+        DrawTextAt(dc, stateText, m + S(42) + iw, y + S(34), g.fontSmall, stateColor);
+    }
+}
+
 void Paint(HDC target) {
     RECT rc;
     GetClientRect(g.hwnd, &rc);
@@ -2046,8 +2381,19 @@ void Paint(HDC target) {
     DrawTextAt(dc, ver, m + w + S(14), S(16) + th - sh - S(2), g.fontSmall, kMuted);
 
     int lh = TextHeight(dc, g.font);
-    DrawTextAt(dc, L"講習プロファイル", m, g.ctrlTop + (g.ctrlHeight - lh) / 2, g.font, kInk);
-    DrawTextAt(dc, L"時間のかかる準備", m, g.row2Top + (g.ctrlHeight - lh) / 2, g.font, kInk);
+    {
+        // タブの下の線
+        RECT line{m, S(92), rc.right - m, S(93)};
+        HBRUSH lb = CreateSolidBrush(kLine);
+        FillRect(dc, &line, lb);
+        DeleteObject(lb);
+    }
+    if (g.tab == 0) {
+        DrawTextAt(dc, L"講習プロファイル", m, g.ctrlTop + (g.ctrlHeight - lh) / 2, g.font, kInk);
+        DrawTextAt(dc, L"時間のかかる準備", m, g.row2Top + (g.ctrlHeight - lh) / 2, g.font, kInk);
+    } else {
+        PaintApps(dc, rc.right);
+    }
 
     int x = m;
     for (const auto& seg : g.summary) {
@@ -2055,7 +2401,7 @@ void Paint(HDC target) {
         DrawTextAt(dc, seg.text, x, g.summaryTop, g.fontBold, seg.color, &sw);
         x += sw;
     }
-    DrawTextAt(dc, L"説明", m, g.detailLabelTop, g.font, kMuted);
+    if (g.tab == 0) DrawTextAt(dc, L"説明", m, g.detailLabelTop, g.font, kMuted);
     PaintProgress(dc, rc.right);
 
     BitBlt(target, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
@@ -2125,12 +2471,35 @@ void DrawToggle(const DRAWITEMSTRUCT* d, int i) {
 }
 
 void DrawButton(const DRAWITEMSTRUCT* d) {
+    if (d->CtlID == IDC_TAB0 || d->CtlID == IDC_TAB1) {
+        const bool sel = (static_cast<int>(d->CtlID - IDC_TAB0) == g.tab);
+        HDC tdc = d->hDC;
+        RECT r = d->rcItem;
+        HBRUSH paper = CreateSolidBrush(kPaper);
+        FillRect(tdc, &r, paper);
+        DeleteObject(paper);
+        if (sel) {
+            RECT bar{r.left, r.bottom - S(3), r.right, r.bottom};
+            HBRUSH ab = CreateSolidBrush(kAccent);
+            FillRect(tdc, &bar, ab);
+            DeleteObject(ab);
+        }
+        wchar_t label[64];
+        GetWindowTextW(d->hwndItem, label, 64);
+        SetBkMode(tdc, TRANSPARENT);
+        SetTextColor(tdc, sel ? kAccent : kMuted);
+        HGDIOBJ old = SelectObject(tdc, sel ? g.fontBold : g.font);
+        DrawTextW(tdc, label, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(tdc, old);
+        return;
+    }
     if (d->CtlID >= IDC_TOG_OFFICE && d->CtlID <= IDC_TOG_APPS) {
         DrawToggle(d, static_cast<int>(d->CtlID - IDC_TOG_OFFICE));
         return;
     }
-    const bool primary = (d->CtlID == IDC_ONECLICK);
-    const bool outline = (d->CtlID == IDC_RUN || d->CtlID == IDC_SHARE || d->CtlID == IDC_APPLY || d->CtlID == IDC_CLEAN || d->CtlID == IDC_RUN_NOW ||
+    const bool primary = (d->CtlID == IDC_ONECLICK || d->CtlID == IDC_APPS_ALL);
+    const bool outline = (d->CtlID == IDC_APPS_RELOAD || (d->CtlID >= kIdAppSetup && d->CtlID < kIdAppSetup + 100) ||
+                          d->CtlID == IDC_RUN || d->CtlID == IDC_SHARE || d->CtlID == IDC_APPLY || d->CtlID == IDC_CLEAN || d->CtlID == IDC_RUN_NOW ||
                           d->CtlID == IDC_RUN_AT);
     const COLORREF outlineColor = (d->CtlID == IDC_CLEAN || (d->CtlID == IDC_RUN_AT && g.deploying)) ? kNg : kAccent;
     const bool disabled = (d->itemState & ODS_DISABLED) != 0;
@@ -2210,6 +2579,14 @@ LRESULT ListCustomDraw(NMLVCUSTOMDRAW* cd) {
 }
 
 void CreateControls(HWND hwnd) {
+    g.tabBtn[0] = CreateWindowExW(0, WC_BUTTONW, L"講習の準備", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_TAB0)), g.inst, nullptr);
+    g.tabBtn[1] = CreateWindowExW(0, WC_BUTTONW, L"独自アプリ", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_TAB1)), g.inst, nullptr);
+    g.appsAll = CreateWindowExW(0, WC_BUTTONW, L"チェックしたものをまとめてセットアップ", WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
+                                hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_APPS_ALL)), g.inst, nullptr);
+    g.appsReload = CreateWindowExW(0, WC_BUTTONW, L"一覧を読み直す", WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
+                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_APPS_RELOAD)), g.inst, nullptr);
     g.combo = CreateWindowExW(0, WC_COMBOBOXW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
                               0, 0, 10, 10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROFILE)), g.inst,
                               nullptr);
@@ -2378,6 +2755,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_CTLCOLORSTATIC:
+            for (const auto& a : g.apps) {
+                if (reinterpret_cast<HWND>(lp) == a.check) {
+                    static HBRUSH paperBrush = CreateSolidBrush(kPaper);
+                    SetBkColor(reinterpret_cast<HDC>(wp), kPaper);
+                    return reinterpret_cast<LRESULT>(paperBrush);
+                }
+            }
             if (reinterpret_cast<HWND>(lp) == g.detail) {
                 HDC dc = reinterpret_cast<HDC>(wp);
                 SetBkColor(dc, kWhite);
@@ -2394,6 +2778,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case WM_COMMAND:
+            if (LOWORD(wp) >= kIdAppSetup && LOWORD(wp) < kIdAppSetup + 100) {
+                SetupApps({static_cast<size_t>(LOWORD(wp) - kIdAppSetup)});
+                return 0;
+            }
             switch (LOWORD(wp)) {
                 case IDC_RUN:
                     StartInspection();
@@ -2404,6 +2792,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDC_ONECLICK:
                     StartOneClick();
                     return 0;
+                case IDC_TAB0:
+                case IDC_TAB1:
+                    ShowTab(LOWORD(wp) - IDC_TAB0);
+                    return 0;
+                case IDC_APPS_RELOAD:
+                    StartAppsStatus();
+                    return 0;
+                case IDC_APPS_ALL: {
+                    std::vector<size_t> idx;
+                    for (size_t i = 0; i < g.apps.size(); ++i)
+                        if (SendMessageW(g.apps[i].check, BM_GETCHECK, 0, 0) == BST_CHECKED) idx.push_back(i);
+                    SetupApps(idx);
+                    return 0;
+                }
                 case IDC_SHARE:
                     share::SetProfilePath(SelectedProfilePath());
                     share::OpenServerWindow(hwnd);
@@ -2478,8 +2880,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             CheckSacOnStartup();
             if (!g.running &&
                 EnsureInternet(L"アプリの入手やインストールには、インターネットが必要です。Wi-Fi や LAN ケーブルをつないでください。", true) &&
-                IsInternetConnected())
+                IsInternetConnected()) {
                 StartUpdateCheck();
+                StartWuCheck();  // Windows Update に、まだ入っていない更新があるか（裏で 1〜数分）
+            }
             return 0;
         case WM_APP_SHARE_FOUND: {
             share::Offer* offer = reinterpret_cast<share::Offer*>(lp);
@@ -2489,6 +2893,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else {
                 share::HandleOffer(hwnd, offer);
             }
+            return 0;
+        }
+        case WM_APP_APPSTATUS: {
+            delete reinterpret_cast<JobResult*>(lp);
+            FinishAppsStatus();
+            return 0;
+        }
+        case WM_APP_WUCHECK: {
+            delete reinterpret_cast<JobResult*>(lp);
             return 0;
         }
         case WM_APP_UPDCHECK: {
@@ -2837,7 +3250,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(kIconId));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(kIconId), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                                               GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     wc.lpszClassName = kClassName;
     RegisterClassExW(&wc);
 

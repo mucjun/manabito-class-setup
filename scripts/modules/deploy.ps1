@@ -881,7 +881,10 @@ function Install-OneApp {
     if (Test-Path -LiteralPath $verFile) { $cur = (Get-Content -LiteralPath $verFile -Raw -Encoding UTF8).Trim() }
     elseif (Test-Path -LiteralPath (Join-Path $dest $exe)) { $cur = (Get-Item -LiteralPath (Join-Path $dest $exe)).VersionInfo.ProductVersion }
     $curText = '入っていない'; if ($cur) { $curText = 'v' + $cur }
-    if ($cur -and $ver -and $cur -eq $ver) { return New-Row $id $name 'SAME' $curText ('v' + $ver) '' }
+    if ($cur -and $ver -and $cur -eq $ver) {
+        try { New-ToolsShortcut (Join-Path $dest $exe) $name } catch { }   # 前の版で入れたものも「まなびとツール」にそろえる
+        return New-Row $id $name 'SAME' $curText ('v' + $ver) ''
+    }
 
     # 起動中なら上書きできない
     $exePath = Join-Path $dest $exe
@@ -920,10 +923,25 @@ function Install-OneApp {
     [System.IO.File]::WriteAllText($verFile, $ver, (New-Object System.Text.UTF8Encoding $false))
     $note = ''
     if (Test-Path -LiteralPath $old) { $note = '前の版は ' + (Split-Path -Leaf $old) + ' に残しています。' }
+    try { New-ToolsShortcut (Join-Path $dest $exe) $name; $note += 'スタートメニューの「まなびとツール」に入れました。' } catch { $note += 'スタートメニューに入れられませんでした。' }
     if ($App.shortcut -eq $true) {
         try { New-Shortcut (Join-Path $dest $exe) $name; $note += 'デスクトップ（全員）にショートカットを作りました。' } catch { $note += 'ショートカットは作れませんでした。' }
     }
     return New-Row $id $name 'DONE' $curText ('v' + $ver) $note
+}
+
+$script:OnlyAppsFilter = ''   # 独自アプリのタブから、選んだアプリの名前（| 区切り）
+
+# スタートメニュー（全員）の「まなびとツール」グループにショートカットを作る
+function New-ToolsShortcut {
+    param([string]$Target, [string]$Name)
+    $dir = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'まなびとツール'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $ws = New-Object -ComObject WScript.Shell
+    $lnk = $ws.CreateShortcut((Join-Path $dir ($Name + '.lnk')))
+    $lnk.TargetPath = $Target
+    $lnk.WorkingDirectory = Split-Path -Parent $Target
+    $lnk.Save()
 }
 
 function Install-OwnApps {
@@ -941,6 +959,10 @@ function Install-OwnApps {
     $rows = @()
     $i = 0
     $list = @($m.apps)
+    if ($script:OnlyAppsFilter) {   # 独自アプリのタブで選んだものだけ
+        $want = @($script:OnlyAppsFilter.Split('|') | Where-Object { $_ })
+        $list = @($list | Where-Object { $want -contains [string]$_.name })
+    }
     foreach ($a in $list) {
         $i++
         Set-DeployStep ($i + 1) ([string]$a.name) ($list.Count + 1)

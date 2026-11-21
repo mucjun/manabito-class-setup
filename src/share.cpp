@@ -1406,6 +1406,7 @@ std::wstring AskPasscode(HWND owner, const std::wstring& server, const std::wstr
         wc.lpfnWndProc = AskProc;
         wc.hInstance = g_inst;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(101));
         wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
         wc.lpszClassName = L"ManabitoShareAsk";
         RegisterClassExW(&wc);
@@ -1760,6 +1761,7 @@ void StartDownload(HWND owner, const Offer& offer, const std::wstring& pass, con
         wc.lpfnWndProc = DownloadProc;
         wc.hInstance = g_inst;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(101));
         wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH));
         wc.lpszClassName = L"ManabitoShareDownload";
         RegisterClassExW(&wc);
@@ -1845,6 +1847,7 @@ void OpenServerWindow(HWND owner) {
         wc.lpfnWndProc = ServerProc;
         wc.hInstance = g_inst;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(101));
         wc.lpszClassName = L"ManabitoShareServer";
         RegisterClassExW(&wc);
         registered = true;

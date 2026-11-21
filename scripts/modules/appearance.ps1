@@ -62,12 +62,25 @@ function Test-TaskbarWidgets {
     $cur = '出さない'; if ($shown) { $cur = '出す' }
     if ($policy -eq 0) { $cur = '出さない（ポリシー）' }
     if ($want -eq 'check-only') {
-        return New-Row 'widgets' 'タスクバーのウィジェット' 'INFO' $cur '確認のみ' ('TaskbarDa={0}' -f $v)
+        return New-Row 'widgets' 'タスクバーのウィジェット' 'NA' $cur '確認のみ' 'この版の Windows では、アプリから変えられないことがあるため対象外。消すときはタスクバーの設定から手で。'
     }
     $wantShown = ($want -eq 'show')
     $exp = '出さない'; if ($wantShown) { $exp = '出す' }
     $state = 'NG'; if ($shown -eq $wantShown) { $state = 'OK' }
     return New-Row 'widgets' 'タスクバーのウィジェット' $state $cur $exp ('TaskbarDa={0}（値が無いときは「出す」） AllowNewsAndInterests={1}' -f $v, $policy)
+}
+
+function Test-StartRecent {
+    param($Prof)
+    $want = [string](Get-Pref $Prof 'startRecent' 'hide')
+    $v = Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_TrackDocs'
+    $shown = ($null -eq $v -or $v -ne 0)
+    $cur = '出さない'; if ($shown) { $cur = '出す' }
+    if ($want -eq 'check-only') { return New-Row 'startrecent' 'スタートの「最近使用」' 'NA' $cur '確認のみ' ('Start_TrackDocs={0}' -f $v) }
+    $wantShown = ($want -eq 'show')
+    $exp = '出さない'; if ($wantShown) { $exp = '出す' }
+    $state = 'NG'; if ($shown -eq $wantShown) { $state = 'OK' }
+    return New-Row 'startrecent' 'スタートの「最近使用」' $state $cur $exp ('Start_TrackDocs={0}（値が無いときは「出す」）' -f $v)
 }
 
 function Test-TaskbarSearch {

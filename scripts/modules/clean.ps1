@@ -83,6 +83,17 @@ function Clear-RecentFiles {
     return Format-CleanResult 'recent' '最近使ったファイル（ジャンプリストを含む）' $items.Count $failed 'クイック アクセスのピン留めは残しています。'
 }
 
+# スタートの「最近使用」：最近使ったファイル（Clear-RecentFiles）を消したあと、スタートメニューを読み込み直させる
+function Clear-StartMenuRecent {
+    param($Prof)
+    $name = 'スタートの「最近使用」'
+    $sid = (Get-Process -Id $PID).SessionId
+    $hosts = @(Get-Process -Name 'StartMenuExperienceHost' -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sid })
+    foreach ($h in $hosts) { Stop-Process -Id $h.Id -Force -ErrorAction SilentlyContinue }   # Windows がすぐに起動し直す
+    if ($hosts.Count -eq 0) { return New-Row 'startrecent-clean' $name 'SAME' '' '空' '' }
+    return New-Row 'startrecent-clean' $name 'DONE' '' '空' 'スタートメニューを読み込み直しました（最近使ったファイルは前の項目で消しています）。'
+}
+
 function Clear-ExplorerTyped {
     param($Prof)
     $n = 0
@@ -347,6 +358,7 @@ function Invoke-CleanAll {
     param($Prof, [System.Collections.Generic.List[object]]$Rows)
     $steps = @(
         @('Clear-RecentFiles',    '最近使ったファイル'),
+        @('Clear-StartMenuRecent', 'スタートの「最近使用」'),
         @('Clear-ExplorerTyped',  'アドレス欄・「ファイル名を指定して実行」の入力履歴'),
         @('Clear-OfficeMru',      'Office の最近使ったファイル'),
         @('Clear-NotepadHistory', 'メモ帳の履歴'),

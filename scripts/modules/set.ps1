@@ -137,13 +137,51 @@ function Set-TaskbarWidgets {
     $before = Test-TaskbarWidgets $Prof
     if ($before.State -eq 'OK') { return New-Row 'widgets' 'タスクバーのウィジェット' 'SAME' $before.Current $before.Expected '' }
     $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh'
-    if ($want -eq 'show') {
-        Remove-RegValue $key 'AllowNewsAndInterests' | Out-Null
-    } else {
-        Set-RegDword $key 'AllowNewsAndInterests' 0
+    try {
+        if ($want -eq 'show') {
+            Remove-RegValue $key 'AllowNewsAndInterests' | Out-Null
+        } else {
+            Set-RegDword $key 'AllowNewsAndInterests' 0
+        }
+    } catch {
+        # 新しい Windows（26H2 で確認）では、この書き込みが止められる。失敗にはせず、手で消す方法を案内する
+        return New-Row 'widgets' 'タスクバーのウィジェット' 'SKIP' $before.Current $before.Expected 'この版の Windows では、アプリからは変えられません。手で消すときは、タスクバーを右クリック →「タスクバーの設定」→「ウィジェット」をオフ。'
     }
     $script:NeedExplorerRestart = $true
     return New-Row 'widgets' 'タスクバーのウィジェット' 'DONE' $before.Current $before.Expected ''
+}
+
+# スタートの「おすすめ（最近使用）」に、最近使ったファイルやおすすめを出さない（受講中に開いたファイルが次の受講生に見えないように）
+function Set-StartRecent {
+    param($Prof)
+    $want = [string](Get-Pref $Prof 'startRecent' 'hide')
+    if ($want -eq 'check-only') { return New-Row 'startrecent' 'スタートの「最近使用」' 'SKIP' '' '確認のみ' '' }
+    $before = Test-StartRecent $Prof
+    if ($before.State -eq 'OK') { return New-Row 'startrecent' 'スタートの「最近使用」' 'SAME' $before.Current $before.Expected '' }
+    $v = 0; if ($want -eq 'show') { $v = 1 }
+    try {
+        Set-RegDword 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_TrackDocs' $v
+        Set-RegDword 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_IrisRecommendations' $v
+    } catch {
+        return New-Row 'startrecent' 'スタートの「最近使用」' 'SKIP' $before.Current $before.Expected ('アプリからは変えられませんでした。手で変えるときは、設定 →「個人用設定」→「スタート」で「最近開いた項目を…表示する」をオフ。（' + $_.Exception.Message + '）')
+    }
+    $script:NeedExplorerRestart = $true
+    return New-Row 'startrecent' 'スタートの「最近使用」' 'DONE' $before.Current $before.Expected 'エクスプローラーのジャンプリストとクイック アクセスの「最近使用した項目」にも出なくなります。'
+}
+
+function Set-DeliveryOptimization {
+    param($Prof)
+    $want = [string](Get-Pref $Prof 'deliveryOptimization' 'lan')
+    $name = '更新の LAN での分け合い（配信の最適化）'
+    if ($want -eq 'check-only') { return New-Row 'dolan' $name 'SKIP' '' '確認のみ' '' }
+    $before = Test-DeliveryOptimization $Prof
+    if ($before.State -eq 'OK') { return New-Row 'dolan' $name 'SAME' $before.Current $before.Expected '' }
+    try {
+        Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 1
+    } catch {
+        return New-Row 'dolan' $name 'SKIP' $before.Current $before.Expected ('この PC では変えられませんでした：' + $_.Exception.Message)
+    }
+    return New-Row 'dolan' $name 'DONE' $before.Current $before.Expected 'グループ ポリシー（ダウンロード モード＝LAN）と同じ値を書きました。'
 }
 
 function Set-Notifications {
@@ -268,10 +306,12 @@ function Invoke-ApplyAll {
         @('Set-FileExtensions',  'ファイルの拡張子'),
         @('Set-TaskbarWidgets',  'タスクバーのウィジェット'),
         @('Set-TaskbarSearch',   'タスクバーの検索'),
+        @('Set-StartRecent',     'スタートの「最近使用」'),
         @('Set-Notifications',   '通知（右下のお知らせ）'),
         @('Set-OneDriveStartup', 'OneDrive の自動起動'),
         @('Set-VolumeMute',      '音量'),
-        @('Set-WindowsUpdate',   'Windows Update')
+        @('Set-WindowsUpdate',   'Windows Update'),
+        @('Set-DeliveryOptimization', '更新の LAN での分け合い')
     )
     $script:NeedExplorerRestart = $false
     foreach ($s in $steps) {

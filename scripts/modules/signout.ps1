@@ -177,56 +177,34 @@ function Clear-AdobeSignIn {
 
 # ---------------------------------------------------------------- 資格情報マネージャー（汎用資格情報だけ）
 
-$script:CredTypeReady = $false
-function Initialize-CredApi {
-    if ($script:CredTypeReady) { return $true }
-    try {
-        Add-Type -ErrorAction Stop -TypeDefinition @'
-using System;
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
-public static class ManabitoCred {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    struct CREDENTIAL {
-        public int Flags; public int Type; public string TargetName; public string Comment;
-        public long LastWritten; public int CredentialBlobSize; public IntPtr CredentialBlob;
-        public int Persist; public int AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
+# Windows の cmdkey（マイクロソフトのツール）で一覧と削除を行う。
+# 以前は資格情報の関数をスクリプトから直接呼んでいたが、パスワードを盗むウイルスと似た動きのため、ウイルス対策に疑われるおそれがあった。
+# 出力は日本語・英語の両方に対応（「ターゲット:」「種類: 汎用」／「Target:」「Type: Generic」）。
+function Get-CmdkeyGeneric {
+    $exe = Join-Path $env:WINDIR 'System32\cmdkey.exe'
+    if (-not $env:WINDIR -or -not (Test-Path -LiteralPath $exe)) { return $null }
+    $lines = @(& $exe /list 2>$null)
+    $list = New-Object System.Collections.Generic.List[string]
+    $target = $null
+    foreach ($l in $lines) {
+        $t = ([string]$l).Trim()
+        if ($t -match '^(ターゲット|Target)\s*:\s*(.+)$') { $target = $Matches[2].Trim(); continue }
+        if ($target -and $t -match '^(種類|Type)\s*:\s*(.+)$') {
+            $kind = $Matches[2].Trim()
+            if ($kind -match '汎用|Generic') { $list.Add($target) }   # 「ドメイン パスワード」（ネットワーク共有・プリンター）は残す
+            $target = $null
+        }
     }
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    static extern bool CredEnumerate(string filter, int flags, out int count, out IntPtr creds);
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    static extern bool CredDelete(string target, int type, int flags);
-    [DllImport("advapi32.dll")]
-    static extern void CredFree(IntPtr p);
-    // 種類 1（汎用）だけを "対象" の一覧で返す
-    public static string[] ListGeneric() {
-        var list = new List<string>();
-        int count; IntPtr p;
-        if (!CredEnumerate(null, 0, out count, out p)) return list.ToArray();
-        try {
-            for (int i = 0; i < count; i++) {
-                IntPtr cp = Marshal.ReadIntPtr(p, i * IntPtr.Size);
-                var c = (CREDENTIAL)Marshal.PtrToStructure(cp, typeof(CREDENTIAL));
-                if (c.Type == 1 && c.TargetName != null) list.Add(c.TargetName);
-            }
-        } finally { CredFree(p); }
-        return list.ToArray();
-    }
-    public static bool DeleteGeneric(string target) { return CredDelete(target, 1, 0); }
-}
-'@
-        $script:CredTypeReady = $true
-    } catch { $script:CredTypeReady = $false }
-    return $script:CredTypeReady
+    return ,$list
 }
 
 # 消さないもの：Windows 自体のサインインに使う印と、プロファイルの keepCredentials に書いた語を含むもの
 function Get-RemovableCredentials {
     param($Prof)
-    if (-not (Initialize-CredApi)) { return $null }
+    $all = Get-CmdkeyGeneric
+    if ($null -eq $all) { return $null }
     $keep = @('virtualapp/didlogical', 'SSO_POP_Device', 'SSO_POP_User') + @(Get-Pref $Prof 'keepCredentials' @())
-    try { $list = [ManabitoCred]::ListGeneric() } catch { return $null }
-    return @($list | Where-Object {
+    return @($all | Where-Object {
         $t = $_
         -not ($keep | Where-Object { $_ -and $t.IndexOf([string]$_, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
     })
@@ -248,7 +226,11 @@ function Clear-StoredCredentials {
     if ($null -eq $c) { return New-Row 'signin-cred' $name 'SKIP' '調べられません' 'なし' '' }
     if ($c.Count -eq 0) { return New-Row 'signin-cred' $name 'SAME' '0 件' 'なし' '' }
     $failed = 0
-    foreach ($t in $c) { if (-not [ManabitoCred]::DeleteGeneric($t)) { $failed++ } }
+    $exe = Join-Path $env:WINDIR 'System32\cmdkey.exe'
+    foreach ($t in $c) {
+        & $exe ('/delete:' + $t) 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { $failed++ }
+    }
     $state = 'DONE'; if ($failed -gt 0) { $state = 'FAIL' }
     return New-Row 'signin-cred' $name $state ('{0} 件' -f $c.Count) 'なし' $(if ($failed) { ('{0} 件は消せませんでした。' -f $failed) } else { '消しました（ネットワーク共有・プリンター用の資格情報は残しています）。' })
 }

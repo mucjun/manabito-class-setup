@@ -19,6 +19,7 @@ param(
     [int]$Office = 0,
     [int]$Adobe = 0,
     [int]$OwnApps = 0,
+    [string]$OnlyApps = '',
     [string]$StartAt = ''
 )
 
@@ -30,6 +31,7 @@ foreach ($m in @('common', 'set', 'deploy')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 $script:DeployStatusFile = $StatusFile
+$script:OnlyAppsFilter = $OnlyApps
 $script:DeployCancelFile = $CancelFile
 
 $lines = New-Object System.Collections.Generic.List[string]
