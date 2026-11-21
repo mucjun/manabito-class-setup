@@ -525,6 +525,16 @@ function Test-LanOfficeSource {
     return ''
 }
 
+# プロファイルが使うファイル（office.xml など）：プロファイルと同じフォルダーに無ければ、アプリの profiles から使う
+# （プロファイルの設定画面で作ったプロファイルは %ProgramData%\ManabitoClassSetup\profiles に置かれ、office.xml を持たないため）
+function Resolve-ProfileFile {
+    param([string]$ProfileDir, [string]$Name)
+    $p = Join-Path $ProfileDir $Name
+    if (Test-Path -LiteralPath $p) { return $p }
+    $appProfiles = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'profiles'
+    return (Join-Path $appProfiles $Name)
+}
+
 function Install-Office {
     param($Prof, [string]$ProfileDir)
     $name = 'Microsoft 365（Office）'
@@ -533,7 +543,7 @@ function Install-Office {
 
     $url = [string](Get-Pref $Prof 'officeSetupUrl' 'https://officecdn.microsoft.com/pr/wsus/setup.exe')
     $xmlName = [string](Get-Pref $Prof 'officeConfig' 'office.xml')
-    $xml = Join-Path $ProfileDir $xmlName
+    $xml = Resolve-ProfileFile $ProfileDir $xmlName
     if (-not (Test-Path -LiteralPath $xml)) { return New-Row 'office' $name 'FAIL' '入っていない' '入っている' ('構成ファイルが見つかりません：' + $xml) }
 
     Initialize-WorkDir
@@ -992,12 +1002,13 @@ function Install-OwnApps {
 # 作業の一覧を画面用に登録し、行う順（削除が先、入れるのが後）の手順の並びを返す。
 # -Office・-Adobe：0=何もしない 1=入れる 2=削除  -OwnApps：0/1
 function Register-DeployPlan {
-    param([int]$Office, [int]$Adobe, [int]$OwnApps)
+    param([int]$Office, [int]$Adobe, [int]$OwnApps, [int]$ExtraCount = 0)
     $steps = @()
     if ($Office -eq 2)  { Register-DeployItem 'office-remove' 'Microsoft 365（Office）の削除' 4;          $steps += ,@('Remove-Office',   'Microsoft 365（Office）の削除', 'office-remove') }
     if ($Adobe -eq 2)   { Register-DeployItem 'adobe-remove'  'Adobe Creative Cloud の削除' 5;            $steps += ,@('Remove-AdobeCC',  'Adobe Creative Cloud の削除', 'adobe-remove') }
     if ($Office -eq 1)  { Register-DeployItem 'office'        'Microsoft 365（Office）のインストール' 6;  $steps += ,@('Install-Office',  'Microsoft 365（Office）', 'office') }
     if ($Adobe -eq 1)   { Register-DeployItem 'adobe'         'Adobe Creative Cloud のインストール' 5;    $steps += ,@('Install-AdobeCC', 'Adobe Creative Cloud デスクトップアプリ', 'adobe') }
+    if ($ExtraCount -gt 0) { Register-DeployItem 'extra'   'この講座で入れるアプリ' $ExtraCount; $steps += ,@('Install-ExtraApps', 'この講座で入れるアプリ', 'extra') }
     if ($OwnApps -eq 1) { Register-DeployItem 'ownapps'       '独自アプリの入手と展開' 2;                 $steps += ,@('Install-OwnApps', '独自アプリ', 'ownapps') }
     return ,$steps
 }

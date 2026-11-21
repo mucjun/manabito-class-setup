@@ -1,7 +1,6 @@
 ﻿{
-  "name": "標準",
-  "description": "一般的な講習（Word・Excel など）。背景色 #1F3A5F・Windows Update を止める（2026-11-20 決定）。",
-
+  "name": "基準",
+  "description": "すべての講座の基準。Office を入れる・背景色 #1F3A5F・Windows Update を止める。ほかのプロファイルは、これを元に違うところだけを変える。",
   "wallpaperColor": "#1F3A5F",
   "showFileExtensions": true,
   "taskbarWidgets": "check-only",
@@ -21,9 +20,7 @@
   "signOutApps": true,
   "keepCredentials": [],
   "cleanOnExit": true,
-
   "screen": "check-only",
-
   "office": "install",
   "officeSetupUrl": "https://officecdn.microsoft.com/pr/wsus/setup.exe",
   "officeConfig": "office.xml",
@@ -36,7 +33,8 @@
   "adobeCleanerUrl": "https://swupmf.adobe.com/webfeed/CleanerTool/win/AdobeCreativeCloudCleanerTool.exe",
   "ownAppsManifest": "https://raw.githubusercontent.com/mucjun/manabito-class-setup/main/release/apps.json",
   "adobe": "skip",
-
+  "extraApps": "",
+  "pdfDefault": "",
   "ownApps": [
     {
       "name": "まなびとPDFツール",

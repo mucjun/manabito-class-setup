@@ -1,4 +1,4 @@
-# まなびと講習準備（v0.18.0）
+# まなびと講習準備（v0.19.0）
 
 講習で使う Windows 11 の PC を点検し、講習用の設定にそろえるアプリです。
 
@@ -188,6 +188,25 @@ Program Files 以外（ダウンロードなど）から起動すると、`C:\Pr
 - ブラウザーで Google・Apple・AI ツールなどにログインしていた分は、ブラウザーの初期化で消える。
 - **開発用の PC では［履歴を消す］を実行しない**（git などのログインも消える）。
 - 講習の間で PC を完全に基準の状態へ戻すには、まなびとバックアップでの復元が確実。
+
+## 講座のプロファイルと、この講座で入れるアプリ（v0.19.0）
+
+- プロファイルは 3 つ：**基準**（standard.json。Office を入れる）、**事務系**（jimu.json。Office・Adobe Acrobat Reader・Paint.NET、PDF は Acrobat）、
+  **WEB系**（web.json。Office・Adobe Creative Cloud・Adobe Acrobat Reader・Visual Studio Code、PDF は Acrobat）。
+- 追加のアプリは、トグルを置かずにプロファイルで決める（講習の準備タブの「この講座のアプリ」の行に出る）。
+  ［今すぐ実行］［まとめて実行］で、入っていなければ winget で入れる（画面を出さない・PC 全体に入れる。できなければ指定を外してもう一度）。
+  点検にアプリごとの行と「PDF を開くアプリ」の行。目録は scripts\extra_apps.txt（Id・名前・winget の ID・入っているかの目印・PDF を開けるか・説明）。
+- Adobe Acrobat Reader：入れたあと（と［設定をそろえる］）で、Adobe の管理者向けの設定により、最初の画面（bToggleFTE）・有料版の案内（bAcroSuppressUpsell）・
+  起動時のお知らせを出さず、使用許諾に同意済みにする。64 ビット版の名前（Adobe Acrobat）にも同じ設定を書く。
+- PDF を開くアプリ：Windows は .pdf の関連付けを直接書き換えさせない（UCPD）ため、公式のポリシー「既定の関連付けの構成ファイル」を使う
+  （%ProgramData%\ManabitoClassSetup\default_associations.xml と DefaultAssociationsConfiguration）。**次にサインインしたとき（再起動のあと）から効く**。
+  プロファイルで「変えない」にすると、このアプリが設定したポリシーだけを外す。
+- Visual Studio Code：日本語化の拡張機能も入れる。［履歴を消す］で、VS Code のサインインと最近開いたもの（%APPDATA%\Code）を消す。
+- **プロファイルの設定**：プロファイルの横の［設定…］。名前・説明・Office・Adobe CC・この講座で入れるアプリ・PDF を開くアプリ・背景色・Windows Update を変えられる。
+  ［基準から新しく作る］・［削除する］（アプリに入っているものを変えた場合は［元に戻す］）。保存は管理者の確認のあと scripts\save_profile.ps1 が行い、
+  %ProgramData%\ManabitoClassSetup\profiles に置く（アプリの更新で消えない。同じファイル名なら、アプリの profiles より優先）。
+  ここに無い設定は、元のプロファイルのものを受け継ぐ。保存の部品は、ファイル名・元の場所・目録の Id・PDF の指定・背景色・名前の文字を確かめてから書く。
+- この講座のアプリの LAN 配布（先生用から）は、次の版で作る。今はインターネットから winget で入れる。
 
 ## 画面のタブ（v0.16.0）
 

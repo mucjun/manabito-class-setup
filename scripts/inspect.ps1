@@ -20,7 +20,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'apps', 'system', 'signout', 'quiet', 'health', 'printers')) {
+foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'apps', 'system', 'signout', 'quiet', 'health', 'printers', 'extraapps')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 
@@ -79,6 +79,7 @@ $checks = @(
     @('前の受講生のサインイン', 'Test-UserInstalledApps', 'この利用者が入れたアプリ'),
     @('アプリ',             'Test-Office',         'Microsoft 365（Office）'),
     @('アプリ',             'Test-AdobeCC',        'Adobe Creative Cloud デスクトップアプリ'),
+    @('アプリ',             'Test-ExtraApps',      'この講座で入れるアプリ'),
     @('アプリ',             'Test-OwnApps',        '独自アプリ'),
     @('この PC',            'Test-DefaultPrinter', '既定のプリンター'),
     @('この PC',            'Test-Printers',       'プリンター（先生用から受け取る）'),

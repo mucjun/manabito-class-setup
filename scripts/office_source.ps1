@@ -39,7 +39,7 @@ try {
     if ($bad) { throw ('展開ツールを確かめられませんでした：' + $bad) }
 
     # 構成：講習用の office.xml に SourcePath（ダウンロード先）を足す
-    $xmlPath = Join-Path $profileDir ([string](Get-Pref $prof 'officeConfig' 'office.xml'))
+    $xmlPath = Resolve-ProfileFile $profileDir ([string](Get-Pref $prof 'officeConfig' 'office.xml'))
     [xml]$cfg = Get-Content -LiteralPath $xmlPath -Raw -Encoding UTF8
     $newDir = $OutDir.TrimEnd('\') + '.new'
     if (Test-Path -LiteralPath $newDir) { Remove-Item -LiteralPath $newDir -Recurse -Force }

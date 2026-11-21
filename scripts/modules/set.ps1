@@ -315,18 +315,22 @@ function Invoke-ApplyAll {
         @('Set-VolumeMute',      '音量'),
         @('Set-WindowsUpdate',   'Windows Update'),
         @('Set-DeliveryOptimization', '更新の LAN での分け合い'),
-        @('Set-Printers',        'プリンター（先生用から受け取る）')
+        @('Set-Printers',        'プリンター（先生用から受け取る）'),
+        @('Set-ExtraAppSettings', 'この講座のアプリの設定')
     )
     $script:NeedExplorerRestart = $false
     foreach ($s in $steps) {
         $func = $s[0]; $label = $s[1]
         try {
-            $r = & $func $Prof
+            $rs = @(& $func $Prof)   # 1 つの項目から複数の行が返ることがある（この講座のアプリの設定など）
         } catch {
-            $r = New-Row ($func.ToLower()) $label 'FAIL' '' '' ('変更の途中で問題が起きました：' + $_.Exception.Message)
+            $rs = @(New-Row ($func.ToLower()) $label 'FAIL' '' '' ('変更の途中で問題が起きました：' + $_.Exception.Message))
         }
-        [void]$Rows.Add($r)
-        Write-Host ('[{0}] {1} ／ {2} → {3} ／ {4}' -f $r.State, $r.Name, $r.Current, $r.Expected, $r.Detail)
+        foreach ($r in $rs) {
+            if ($null -eq $r -or -not $r.PSObject.Properties['State']) { continue }
+            [void]$Rows.Add($r)
+            Write-Host ('[{0}] {1} ／ {2} → {3} ／ {4}' -f $r.State, $r.Name, $r.Current, $r.Expected, $r.Detail)
+        }
     }
     if ($script:NeedExplorerRestart) {
         $ok = Restart-UserExplorer

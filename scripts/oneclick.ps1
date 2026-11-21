@@ -20,14 +20,15 @@ param(
     [string]$ProtectPath = '',
     [int]$Office = 0,
     [int]$Adobe = 0,
-    [int]$OwnApps = 0
+    [int]$OwnApps = 0,
+    [int]$ExtraApps = 0
 )
 
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($LogFile) { try { Start-Transcript -LiteralPath $LogFile -Force | Out-Null } catch { } }
 
-foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'quiet', 'printers', 'set', 'clean', 'signout', 'deploy')) {
+foreach ($m in @('common', 'power', 'appearance', 'sound', 'security', 'traces', 'quiet', 'printers', 'set', 'clean', 'signout', 'extraapps', 'deploy')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 $script:DeployStatusFile = $StatusFile
@@ -102,7 +103,9 @@ if ($ProtectPath) {
 
 # ---- 作業の一覧（画面の行）：設定 → アプリ → 履歴
 Register-DeployItem 'apply' '設定をそろえる' 1
-$steps = Register-DeployPlan $Office $Adobe $OwnApps
+$extraCount = 0
+if ($ExtraApps -eq 1) { $extraCount = @(Get-ProfileExtraIds $prof).Count }   # プロファイルで決めた「この講座で入れるアプリ」
+$steps = Register-DeployPlan $Office $Adobe $OwnApps $extraCount
 Register-DeployItem 'clean' '前の受講生の履歴を消す' 1
 Set-KeepAwake $true
 $script:DeployStartTime = Get-Date

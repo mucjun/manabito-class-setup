@@ -39,7 +39,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.18.0";
+const wchar_t kVersion[] = L"0.19.0";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -69,6 +69,7 @@ enum : int {
     IDC_RUN,
     IDC_ONECLICK,
     IDC_SHARE,
+    IDC_PROFSET,      // ［設定…］（プロファイルの設定）
     IDC_TAB0,         // タブ：講習の準備
     IDC_TAB1,         // タブ：独自アプリ
     IDC_APPS_ALL,     // チェックしたものをまとめてセットアップ
@@ -121,6 +122,15 @@ struct ProgressItem {
 
 struct ProfileEntry {
     std::wstring name, path;
+    std::wstring file;      // ファイル名（standard.json など）
+    bool builtin = false;   // アプリの profiles にあるもの
+    bool custom = false;    // %ProgramData%\ManabitoClassSetup\profiles にあるもの（設定画面で保存したもの）
+};
+
+// 講座のプロファイルで選べる追加のアプリ（scripts\extra_apps.txt）
+struct ExtraApp {
+    std::wstring id, name;
+    bool pdf = false;
 };
 
 struct Segment {
@@ -181,6 +191,9 @@ struct App {
     std::wstring deployTsv, deployLog, deployStatus, deployCancel, deployShown;
     bool oneClick = false;  // 今の準備が［まとめて実行］か
     bool updating = false;  // 新しい版に入れ替える準備中
+    HWND profSet = nullptr;     // ［設定…］
+    int extrasTop = 0;          // 「この講座で入れるアプリ」の行
+    std::wstring extrasText;    // その文（プロファイルを選んだときに作る）
     // タブ（0 = 講習の準備、1 = 独自アプリ）
     int tab = 0;
     HWND tabBtn[2] = {nullptr, nullptr};
@@ -357,19 +370,44 @@ std::wstring ReadJsonString(const std::wstring& path, const wchar_t* key) {
     return std::wstring();
 }
 
-void LoadProfiles() {
+// 設定画面で保存したプロファイルの置き場所（アプリの更新で消えない）
+std::wstring CustomProfileDir() {
+    wchar_t buf[MAX_PATH] = L"";
+    DWORD n = GetEnvironmentVariableW(L"ProgramData", buf, MAX_PATH);
+    std::wstring pd = (n > 0 && n < MAX_PATH) ? std::wstring(buf, n) : L"C:\\ProgramData";
+    return pd + L"\\ManabitoClassSetup\\profiles";
+}
+
+void LoadProfiles(const std::wstring& keepFile = L"") {
+    std::wstring keep = keepFile;
+    if (keep.empty()) {
+        int cur = static_cast<int>(SendMessageW(g.combo, CB_GETCURSEL, 0, 0));
+        if (cur >= 0 && cur < static_cast<int>(g.profiles.size())) keep = g.profiles[static_cast<size_t>(cur)].file;
+    }
     g.profiles.clear();
-    std::wstring dir = g.exeDir + L"\\profiles\\";
-    WIN32_FIND_DATAW fd{};
-    HANDLE f = FindFirstFileW((dir + L"*.json").c_str(), &fd);
-    if (f != INVALID_HANDLE_VALUE) {
+    // アプリの profiles と、保存の場所。同じファイル名なら、保存の場所のもの（設定画面で変えたもの）を使う
+    const std::wstring dirs[2] = {g.exeDir + L"\\profiles\\", CustomProfileDir() + L"\\"};
+    for (int d = 0; d < 2; ++d) {
+        WIN32_FIND_DATAW fd{};
+        HANDLE f = FindFirstFileW((dirs[d] + L"*.json").c_str(), &fd);
+        if (f == INVALID_HANDLE_VALUE) continue;
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
             ProfileEntry p;
-            p.path = dir + fd.cFileName;
+            p.file = fd.cFileName;
+            p.path = dirs[d] + fd.cFileName;
             p.name = ReadProfileName(p.path);
             if (p.name.empty()) p.name = fd.cFileName;
-            g.profiles.push_back(p);
+            auto it = std::find_if(g.profiles.begin(), g.profiles.end(), [&](const ProfileEntry& e) { return _wcsicmp(e.file.c_str(), p.file.c_str()) == 0; });
+            if (it != g.profiles.end()) {
+                it->path = p.path;
+                it->name = p.name;
+                it->custom = true;
+            } else {
+                p.builtin = (d == 0);
+                p.custom = (d == 1);
+                g.profiles.push_back(p);
+            }
         } while (FindNextFileW(f, &fd));
         FindClose(f);
     }
@@ -381,11 +419,72 @@ void LoadProfiles() {
         return _wcsicmp(a.path.c_str(), b.path.c_str()) < 0;
     });
     SendMessageW(g.combo, CB_RESETCONTENT, 0, 0);
-    for (const auto& p : g.profiles) SendMessageW(g.combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(p.name.c_str()));
+    int sel = 0;
+    for (size_t i = 0; i < g.profiles.size(); ++i) {
+        SendMessageW(g.combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(g.profiles[i].name.c_str()));
+        if (!keep.empty() && _wcsicmp(g.profiles[i].file.c_str(), keep.c_str()) == 0) sel = static_cast<int>(i);
+    }
     if (g.profiles.empty()) {
         SendMessageW(g.combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"（プロファイルなし）"));
     }
-    SendMessageW(g.combo, CB_SETCURSEL, 0, 0);
+    SendMessageW(g.combo, CB_SETCURSEL, sel, 0);
+}
+
+std::vector<ExtraApp> LoadExtraCatalog() {
+    std::vector<ExtraApp> list;
+    std::string bytes;
+    if (!ReadAllBytes(g.exeDir + L"\\scripts\\extra_apps.txt", bytes)) return list;
+    std::wstring t = DecodeText(bytes);
+    size_t pos = 0;
+    while (pos < t.size()) {
+        size_t nl = t.find(L'\n', pos);
+        std::wstring line = t.substr(pos, nl == std::wstring::npos ? std::wstring::npos : nl - pos);
+        pos = nl == std::wstring::npos ? t.size() : nl + 1;
+        while (!line.empty() && (line.back() == L'\r' || line.back() == L' ')) line.pop_back();
+        if (line.empty() || line[0] == L'#') continue;
+        std::vector<std::wstring> f;
+        size_t a0 = 0;
+        for (;;) {
+            size_t b0 = line.find(L'|', a0);
+            f.push_back(line.substr(a0, b0 == std::wstring::npos ? std::wstring::npos : b0 - a0));
+            if (b0 == std::wstring::npos) break;
+            a0 = b0 + 1;
+        }
+        if (f.size() < 6) continue;
+        list.push_back({f[0], f[1], f[4] == L"1"});
+    }
+    return list;
+}
+
+std::vector<std::wstring> SplitComma(const std::wstring& s) {
+    std::vector<std::wstring> out;
+    size_t a = 0;
+    while (a <= s.size()) {
+        size_t b = s.find(L',', a);
+        std::wstring t = s.substr(a, b == std::wstring::npos ? std::wstring::npos : b - a);
+        while (!t.empty() && t.front() == L' ') t.erase(0, 1);
+        while (!t.empty() && t.back() == L' ') t.pop_back();
+        if (!t.empty()) out.push_back(t);
+        if (b == std::wstring::npos) break;
+        a = b + 1;
+    }
+    return out;
+}
+
+// 選んでいるプロファイルの「この講座で入れるアプリ」の名前（・区切り。無ければ空）
+std::wstring ProfileExtraNames(const std::wstring& profilePath) {
+    if (profilePath.empty()) return std::wstring();
+    auto ids = SplitComma(ReadJsonString(profilePath, L"extraApps"));
+    if (ids.empty()) return std::wstring();
+    auto cat = LoadExtraCatalog();
+    std::wstring out;
+    for (const auto& id : ids) {
+        std::wstring name = id;
+        for (const auto& a : cat)
+            if (a.id == id) name = a.name;
+        out += (out.empty() ? L"" : L"・") + name;
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------- 結果
@@ -672,7 +771,7 @@ void EnsureLogDir() {
 
 void SetBusy(bool busy) {
     g.running = busy;
-    for (HWND h : {g.run, g.oneclick, g.apply, g.clean, g.combo, g.tog[0], g.tog[1], g.tog[2], g.runNow, g.timePick}) {
+    for (HWND h : {g.run, g.oneclick, g.apply, g.clean, g.combo, g.profSet, g.tog[0], g.tog[1], g.tog[2], g.runNow, g.timePick}) {
         if (!h) continue;
         EnableWindow(h, !busy);
         InvalidateRect(h, nullptr, FALSE);
@@ -1380,8 +1479,428 @@ void ApplyProfileToggles() {
     g.toggleOn[1] = (ReadJsonString(p, L"adobe") == L"install");
     g.appsAvailable = !ReadJsonString(p, L"ownAppsManifest").empty();
     g.toggleOn[2] = false;  // 独自アプリは初めはオフ（独自アプリのタブから入れるのが基本。淳さんの指定）
+    {
+        const std::wstring names = ProfileExtraNames(p);
+        const std::wstring pdf = ReadJsonString(p, L"pdfDefault");
+        g.extrasText = names.empty() ? L"なし（プロファイルの横の［設定…］で、講座ごとに選べます）"
+                                     : names + L"　―［今すぐ実行］［まとめて実行］で、入っていなければ入れます" + (pdf.empty() ? L"" : L"。PDF は Adobe Acrobat Reader で開きます");
+    }
     for (HWND h : g.tog)
         if (h) InvalidateRect(h, nullptr, FALSE);
+}
+
+
+// ---------------------------------------------------------------- プロファイルの設定（v0.19.0）
+//   保存・削除は scripts\save_profile.ps1（管理者）。置き場所は %ProgramData%\ManabitoClassSetup\profiles。
+//   アプリに入っているプロファイルを変えたときは、同じファイル名で保存の場所に置く（こちらが優先。［元に戻す］で消す）。
+
+// 管理者として動かし、終わるまで待つ（待つ間も窓を描き直す）。戻り値：起動できたか
+bool RunElevatedWait(HWND owner, const std::wstring& params, DWORD timeoutMs) {
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    sei.hwnd = owner;
+    sei.lpVerb = L"runas";
+    const std::wstring exe = PowerShellPath();
+    sei.lpFile = exe.c_str();
+    sei.lpParameters = params.c_str();
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei) || !sei.hProcess) return false;
+    const DWORD t0 = GetTickCount();
+    HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    for (;;) {
+        DWORD left = timeoutMs > GetTickCount() - t0 ? timeoutMs - (GetTickCount() - t0) : 0;
+        // 描き直しだけを行う（タイマーなどは保存のあとに回す：待つ間に、ほかの確認の窓が出ないように）
+        DWORD r = MsgWaitForMultipleObjects(1, &sei.hProcess, FALSE, left, QS_PAINT);
+        if (r != WAIT_OBJECT_0 + 1) break;  // 終わった・時間切れ
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, WM_PAINT, WM_PAINT, PM_REMOVE)) DispatchMessageW(&msg);
+    }
+    SetCursor(old);
+    CloseHandle(sei.hProcess);
+    return true;
+}
+
+enum : int {
+    IDP_LIST = 7300,
+    IDP_NEW,
+    IDP_DELETE,
+    IDP_NAME,
+    IDP_DESC,
+    IDP_OFFICE,
+    IDP_ADOBE,
+    IDP_PDF,
+    IDP_COLOR,
+    IDP_WU,
+    IDP_SAVE,
+    IDP_CLOSE,
+    IDP_NOTE,
+    IDP_APP0 = 7400,  // + 目録の番号
+};
+
+struct ProfDlg {
+    HWND hwnd = nullptr;
+    std::vector<ProfileEntry> items;
+    std::vector<ExtraApp> cat;
+    std::vector<HWND> checks;
+    std::vector<int> pdfIndex;  // PDF の選択肢 → 目録の番号（0 番目は「変えない」）
+    int cur = -1;
+    bool dirty = false, loading = false;
+    bool pendingNew = false;  // まだ保存していない新しいプロファイル（一覧の最後）
+    HFONT font = nullptr;
+} g_pd;
+
+std::wstring StandardProfilePath() {
+    for (const auto& p : g.profiles)
+        if (_wcsicmp(p.file.c_str(), L"standard.json") == 0) return p.path;
+    return g.profiles.empty() ? std::wstring() : g.profiles[0].path;
+}
+
+void ProfDlgFillList() {
+    HWND lb = GetDlgItem(g_pd.hwnd, IDP_LIST);
+    SendMessageW(lb, LB_RESETCONTENT, 0, 0);
+    for (size_t i = 0; i < g_pd.items.size(); ++i) {
+        const auto& p = g_pd.items[i];
+        std::wstring t = p.name;
+        if (g_pd.pendingNew && i + 1 == g_pd.items.size()) t += L"（新しい・まだ保存していません）";
+        else if (p.builtin && p.custom) t += L"（変更あり）";
+        else if (p.custom) t += L"（追加）";
+        SendMessageW(lb, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t.c_str()));
+    }
+    SendMessageW(lb, LB_SETCURSEL, g_pd.cur, 0);
+}
+
+void ProfDlgLoadFields(int i) {
+    g_pd.loading = true;
+    g_pd.cur = i;
+    const ProfileEntry& p = g_pd.items[static_cast<size_t>(i)];
+    const std::wstring path = p.path;  // 新しいものは、基準の中身を読む
+    SetDlgItemTextW(g_pd.hwnd, IDP_NAME, p.name.c_str());
+    SetDlgItemTextW(g_pd.hwnd, IDP_DESC, ReadJsonString(path, L"description").c_str());
+    SendDlgItemMessageW(g_pd.hwnd, IDP_OFFICE, CB_SETCURSEL, ReadJsonString(path, L"office") == L"install" ? 0 : 1, 0);
+    SendDlgItemMessageW(g_pd.hwnd, IDP_ADOBE, CB_SETCURSEL, ReadJsonString(path, L"adobe") == L"install" ? 0 : 1, 0);
+    auto ids = SplitComma(ReadJsonString(path, L"extraApps"));
+    for (size_t k = 0; k < g_pd.cat.size(); ++k) {
+        bool on = std::find(ids.begin(), ids.end(), g_pd.cat[k].id) != ids.end();
+        SendMessageW(g_pd.checks[k], BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+    const std::wstring pdf = ReadJsonString(path, L"pdfDefault");
+    int pdfSel = 0;
+    for (size_t k = 1; k < g_pd.pdfIndex.size(); ++k)
+        if (g_pd.cat[static_cast<size_t>(g_pd.pdfIndex[k])].id == pdf) pdfSel = static_cast<int>(k);
+    SendDlgItemMessageW(g_pd.hwnd, IDP_PDF, CB_SETCURSEL, pdfSel, 0);
+    std::wstring color = ReadJsonString(path, L"wallpaperColor");
+    SetDlgItemTextW(g_pd.hwnd, IDP_COLOR, color.empty() ? L"#1F3A5F" : color.c_str());
+    SendDlgItemMessageW(g_pd.hwnd, IDP_WU, CB_SETCURSEL, ReadJsonString(path, L"windowsUpdate") == L"stop" ? 0 : 1, 0);
+    // 削除・元に戻す
+    const bool isNew = g_pd.pendingNew && i + 1 == static_cast<int>(g_pd.items.size());
+    HWND del = GetDlgItem(g_pd.hwnd, IDP_DELETE);
+    SetWindowTextW(del, (p.builtin && p.custom) ? L"元に戻す" : isNew ? L"作るのをやめる" : L"削除する");
+    EnableWindow(del, isNew || p.custom);
+    g_pd.dirty = isNew;
+    g_pd.loading = false;
+}
+
+// 変えたまま離れてよいか
+bool ProfDlgCanLeave() {
+    if (!g_pd.dirty) return true;
+    return MessageBoxW(g_pd.hwnd, L"変えたところを保存していません。保存せずに進みますか？", kAppName, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+}
+
+std::wstring GetText(HWND dlg, int id) {
+    HWND h = GetDlgItem(dlg, id);
+    std::wstring t(static_cast<size_t>(GetWindowTextLengthW(h)) + 1, L'\0');
+    GetWindowTextW(h, &t[0], static_cast<int>(t.size()));
+    t.resize(wcslen(t.c_str()));
+    return t;
+}
+
+// 保存の部品を動かし、結果（1 行目 OK/NG、2 行目 説明）を読む
+bool ProfDlgRunSave(const std::wstring& args, std::wstring& message) {
+    EnsureLogDir();
+    const std::wstring out = g.logDir + L"\\プロファイルの保存_" + Timestamp() + L".txt";
+    const std::wstring script = g.exeDir + L"\\scripts\\save_profile.ps1";
+    if (!FileExists(script)) {
+        message = L"保存の部品が見つかりません：" + script;
+        return false;
+    }
+    std::wstring params = L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + L"\" -OutFile \"" + out + L"\" " + args;
+    EnableWindow(g_pd.hwnd, FALSE);  // 待つ間は操作させない（二度押しを防ぐ）
+    const bool started = RunElevatedWait(g_pd.hwnd, params, 60000);
+    EnableWindow(g_pd.hwnd, TRUE);
+    SetForegroundWindow(g_pd.hwnd);
+    if (!started) {
+        message = L"管理者の確認で「はい」が押されなかったため、保存しませんでした。";
+        return false;
+    }
+    std::string bytes;
+    if (!ReadAllBytes(out, bytes)) {
+        message = L"保存の結果を読めませんでした。";
+        return false;
+    }
+    std::wstring t = DecodeText(bytes);
+    size_t nl = t.find(L'\n');
+    std::wstring first = t.substr(0, nl);
+    std::wstring second = nl == std::wstring::npos ? L"" : t.substr(nl + 1);
+    while (!first.empty() && (first.back() == L'\r' || first.back() == L' ')) first.pop_back();
+    while (!second.empty() && (second.back() == L'\r' || second.back() == L'\n')) second.pop_back();
+    message = second;
+    return first == L"OK";
+}
+
+// 引数に入れる文字（「"」は使えない。最後の「\」は引数の区切りを壊すので外す）
+bool ArgSafe(const std::wstring& v) { return v.find(L'"') == std::wstring::npos && (v.empty() || v.back() != L'\\'); }
+
+void ProfDlgReloadAfterSave(const std::wstring& file) {
+    LoadProfiles(file);  // もとの窓の一覧も読み直す（保存したものを選ぶ）
+    ApplyProfileToggles();
+    InvalidateRect(g.hwnd, nullptr, FALSE);
+    g_pd.items = g.profiles;
+    g_pd.pendingNew = false;
+    int sel = 0;
+    for (size_t i = 0; i < g_pd.items.size(); ++i)
+        if (_wcsicmp(g_pd.items[i].file.c_str(), file.c_str()) == 0) sel = static_cast<int>(i);
+    g_pd.cur = sel;
+    ProfDlgFillList();
+    if (!g_pd.items.empty()) ProfDlgLoadFields(sel);
+}
+
+void ProfDlgSave() {
+    if (g_pd.cur < 0) return;
+    const ProfileEntry& p = g_pd.items[static_cast<size_t>(g_pd.cur)];
+    const std::wstring name = GetText(g_pd.hwnd, IDP_NAME), desc = GetText(g_pd.hwnd, IDP_DESC), color = GetText(g_pd.hwnd, IDP_COLOR);
+    if (name.empty()) {
+        MessageBoxW(g_pd.hwnd, L"名前を入れてください。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!ArgSafe(name) || !ArgSafe(desc) || !ArgSafe(color)) {
+        MessageBoxW(g_pd.hwnd, L"名前・説明・背景色には、「\"」と、最後の「\\」は使えません。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring ids;
+    for (size_t k = 0; k < g_pd.cat.size(); ++k)
+        if (SendMessageW(g_pd.checks[k], BM_GETCHECK, 0, 0) == BST_CHECKED) ids += (ids.empty() ? L"" : L",") + g_pd.cat[k].id;
+    int pdfSel = static_cast<int>(SendDlgItemMessageW(g_pd.hwnd, IDP_PDF, CB_GETCURSEL, 0, 0));
+    std::wstring pdf = (pdfSel > 0 && pdfSel < static_cast<int>(g_pd.pdfIndex.size())) ? g_pd.cat[static_cast<size_t>(g_pd.pdfIndex[static_cast<size_t>(pdfSel)])].id : L"";
+    const bool officeOn = SendDlgItemMessageW(g_pd.hwnd, IDP_OFFICE, CB_GETCURSEL, 0, 0) == 0;
+    const bool adobeOn = SendDlgItemMessageW(g_pd.hwnd, IDP_ADOBE, CB_GETCURSEL, 0, 0) == 0;
+    const bool wuStop = SendDlgItemMessageW(g_pd.hwnd, IDP_WU, CB_GETCURSEL, 0, 0) == 0;
+    std::wstring args = L"-Base \"" + p.path + L"\" -FileName \"" + p.file + L"\" -Name \"" + name + L"\" -Description \"" + desc + L"\" -Office " +
+                        (officeOn ? L"install" : L"skip") + L" -Adobe " + (adobeOn ? L"install" : L"skip") + L" -ExtraApps \"" + ids + L"\" -PdfDefault \"" + pdf +
+                        L"\" -WallpaperColor \"" + color + L"\" -WindowsUpdate " + (wuStop ? L"stop" : L"check-only");
+    std::wstring msg;
+    const bool ok = ProfDlgRunSave(args, msg);
+    MessageBoxW(g_pd.hwnd, msg.c_str(), kAppName, MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    if (ok) ProfDlgReloadAfterSave(p.file);
+}
+
+void ProfDlgDelete() {
+    if (g_pd.cur < 0) return;
+    const ProfileEntry p = g_pd.items[static_cast<size_t>(g_pd.cur)];
+    if (g_pd.pendingNew && g_pd.cur + 1 == static_cast<int>(g_pd.items.size())) {  // まだ保存していない
+        g_pd.items.pop_back();
+        g_pd.pendingNew = false;
+        g_pd.cur = 0;
+        ProfDlgFillList();
+        if (!g_pd.items.empty()) ProfDlgLoadFields(0);
+        return;
+    }
+    if (!p.custom) return;
+    std::wstring ask = (p.builtin ? L"「" + p.name + L"」を、アプリに入っている元の内容に戻しますか？" : L"「" + p.name + L"」を削除しますか？（元に戻せません）");
+    if (MessageBoxW(g_pd.hwnd, ask.c_str(), kAppName, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+    std::wstring msg;
+    const bool ok = ProfDlgRunSave(L"-Delete -FileName \"" + p.file + L"\"", msg);
+    MessageBoxW(g_pd.hwnd, msg.c_str(), kAppName, MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    if (ok) ProfDlgReloadAfterSave(p.builtin ? p.file : L"standard.json");
+}
+
+void ProfDlgNew() {
+    if (g_pd.pendingNew) return;
+    if (!ProfDlgCanLeave()) return;
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t file[64];
+    swprintf(file, 64, L"custom_%04d%02d%02d_%02d%02d%02d.json", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    ProfileEntry p;
+    p.file = file;
+    p.path = StandardProfilePath();  // 基準の中身から始める
+    p.name = L"新しいプロファイル";
+    g_pd.items.push_back(p);
+    g_pd.pendingNew = true;
+    g_pd.cur = static_cast<int>(g_pd.items.size()) - 1;
+    ProfDlgFillList();
+    ProfDlgLoadFields(g_pd.cur);
+    SetFocus(GetDlgItem(g_pd.hwnd, IDP_NAME));
+    SendDlgItemMessageW(g_pd.hwnd, IDP_NAME, EM_SETSEL, 0, -1);
+}
+
+LRESULT CALLBACK ProfDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CTLCOLORSTATIC: {
+            static HBRUSH paper = CreateSolidBrush(kPaper);
+            HDC dc = reinterpret_cast<HDC>(wp);
+            SetBkColor(dc, kPaper);
+            SetTextColor(dc, GetDlgCtrlID(reinterpret_cast<HWND>(lp)) == IDP_NOTE ? kMuted : kInk);
+            return reinterpret_cast<LRESULT>(paper);
+        }
+        case WM_ERASEBKGND: {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            HBRUSH b = CreateSolidBrush(kPaper);
+            FillRect(reinterpret_cast<HDC>(wp), &rc, b);
+            DeleteObject(b);
+            return 1;
+        }
+        case WM_COMMAND: {
+            const int id = LOWORD(wp), code = HIWORD(wp);
+            if (id == IDP_LIST && code == LBN_SELCHANGE) {
+                int sel = static_cast<int>(SendDlgItemMessageW(hwnd, IDP_LIST, LB_GETCURSEL, 0, 0));
+                if (sel == g_pd.cur || sel < 0) return 0;
+                if (!ProfDlgCanLeave()) {
+                    SendDlgItemMessageW(hwnd, IDP_LIST, LB_SETCURSEL, g_pd.cur, 0);
+                    return 0;
+                }
+                if (g_pd.pendingNew && g_pd.cur + 1 == static_cast<int>(g_pd.items.size())) {  // 保存しなかった新しいものは捨てる
+                    g_pd.items.pop_back();
+                    g_pd.pendingNew = false;
+                    if (sel >= static_cast<int>(g_pd.items.size())) sel = 0;
+                    g_pd.cur = sel;
+                    ProfDlgFillList();
+                }
+                ProfDlgLoadFields(sel);
+                return 0;
+            }
+            if (!g_pd.loading && ((code == EN_CHANGE && (id == IDP_NAME || id == IDP_DESC || id == IDP_COLOR)) ||
+                                  (code == CBN_SELCHANGE && (id == IDP_OFFICE || id == IDP_ADOBE || id == IDP_PDF || id == IDP_WU)) ||
+                                  (code == BN_CLICKED && id >= IDP_APP0 && id < IDP_APP0 + 100))) {
+                g_pd.dirty = true;
+                return 0;
+            }
+            if (id == IDP_NEW) ProfDlgNew();
+            else if (id == IDP_DELETE) ProfDlgDelete();
+            else if (id == IDP_SAVE) ProfDlgSave();
+            else if (id == IDP_CLOSE || id == IDCANCEL) SendMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        case WM_CLOSE:
+            if (!ProfDlgCanLeave()) return 0;
+            EnableWindow(g.hwnd, TRUE);
+            DestroyWindow(hwnd);
+            SetForegroundWindow(g.hwnd);
+            return 0;
+        case WM_DESTROY:
+            if (g_pd.font) DeleteObject(g_pd.font);
+            g_pd = ProfDlg();
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void OpenProfileSettings() {
+    if (g_pd.hwnd) {
+        SetForegroundWindow(g_pd.hwnd);
+        return;
+    }
+    if (g.running) {
+        MessageBoxW(g.hwnd, L"作業の最中は、プロファイルの設定を開けません。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = ProfDlgProc;
+        wc.hInstance = g.inst;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hIcon = LoadIconW(g.inst, MAKEINTRESOURCEW(kIconId));
+        wc.lpszClassName = L"ManabitoProfileSettings";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+    g_pd = ProfDlg();
+    g_pd.items = g.profiles;
+    g_pd.cat = LoadExtraCatalog();
+    const int dpi = static_cast<int>(GetDpiForWindow(g.hwnd));
+    auto S = [dpi](int v) { return MulDiv(v, dpi, 96); };
+    const int appsH = static_cast<int>(g_pd.cat.size()) * S(28);
+    const int W = S(880), H = S(560) + appsH;
+    RECT owner;
+    GetWindowRect(g.hwnd, &owner);
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ManabitoProfileSettings", L"まなびと講習準備 ― プロファイルの設定",
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU, owner.left + S(60), owner.top + S(60), W, H, g.hwnd, nullptr, g.inst, nullptr);
+    if (!hwnd) return;
+    g_pd.hwnd = hwnd;
+    g_pd.font = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
+    auto mk = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, DWORD ex = 0) {
+        HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g.inst, nullptr);
+        SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(g_pd.font), FALSE);
+        return c;
+    };
+    const int m = S(16), lx = m + S(300), fx = lx + S(170), fw = W - fx - S(40);
+    mk(WC_STATICW, L"プロファイル", 0, m, S(12), S(280), S(22), -1);
+    mk(WC_LISTBOXW, L"", WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, m, S(36), S(280), H - S(190), IDP_LIST);
+    mk(WC_BUTTONW, L"基準から新しく作る", WS_TABSTOP, m, H - S(146), S(280), S(32), IDP_NEW);
+    mk(WC_BUTTONW, L"削除する", WS_TABSTOP, m, H - S(108), S(280), S(32), IDP_DELETE);
+    int y = S(36);
+    auto row = [&](const wchar_t* label) {
+        mk(WC_STATICW, label, 0, lx, y + S(5), S(165), S(22), -1);
+    };
+    row(L"名前");
+    mk(WC_EDITW, L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, fx, y, fw, S(28), IDP_NAME);
+    y += S(40);
+    row(L"説明");
+    mk(WC_EDITW, L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, fx, y, fw, S(28), IDP_DESC);
+    y += S(40);
+    row(L"Office");
+    HWND co = mk(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, fx, y, S(220), S(200), IDP_OFFICE);
+    SendMessageW(co, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"入れる"));
+    SendMessageW(co, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"入れない"));
+    y += S(40);
+    row(L"Adobe Creative Cloud");
+    HWND ca = mk(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, fx, y, S(220), S(200), IDP_ADOBE);
+    SendMessageW(ca, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"入れる"));
+    SendMessageW(ca, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"入れない"));
+    y += S(40);
+    row(L"この講座で入れるアプリ");
+    for (size_t k = 0; k < g_pd.cat.size(); ++k) {
+        g_pd.checks.push_back(mk(WC_BUTTONW, g_pd.cat[k].name.c_str(), WS_TABSTOP | BS_AUTOCHECKBOX, fx, y + static_cast<int>(k) * S(28), fw, S(24),
+                                 IDP_APP0 + static_cast<int>(k)));
+    }
+    if (g_pd.cat.empty()) mk(WC_STATICW, L"（目録 scripts\\extra_apps.txt がありません）", 0, fx, y + S(5), fw, S(22), -1);
+    y += std::max(appsH, S(28)) + S(12);
+    row(L"PDF を開くアプリ");
+    HWND cp = mk(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, fx, y, S(320), S(200), IDP_PDF);
+    SendMessageW(cp, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"変えない（Windows の既定のまま）"));
+    g_pd.pdfIndex.push_back(-1);
+    for (size_t k = 0; k < g_pd.cat.size(); ++k) {
+        if (!g_pd.cat[k].pdf) continue;
+        SendMessageW(cp, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(g_pd.cat[k].name.c_str()));
+        g_pd.pdfIndex.push_back(static_cast<int>(k));
+    }
+    y += S(40);
+    row(L"背景色");
+    mk(WC_EDITW, L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, fx, y, S(120), S(28), IDP_COLOR);
+    mk(WC_STATICW, L"#RRGGBB の形（例 #1F3A5F）", 0, fx + S(132), y + S(5), S(260), S(22), IDP_NOTE);
+    y += S(40);
+    row(L"Windows Update");
+    HWND cw = mk(WC_COMBOBOXW, L"", WS_TABSTOP | CBS_DROPDOWNLIST, fx, y, S(320), S(200), IDP_WU);
+    SendMessageW(cw, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"自動の更新を止める"));
+    SendMessageW(cw, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"変えない（確認だけ）"));
+    y += S(48);
+    mk(WC_STATICW,
+       L"保存すると、管理者の確認が出ます。保存の場所は %ProgramData%\\ManabitoClassSetup\\profiles で、アプリを更新しても消えません。"
+       L"ここに無い設定（スリープ・通知・履歴の消し方など）は、元のプロファイルのものを受け継ぎます。",
+       0, lx, y, W - lx - S(40), S(66), IDP_NOTE);
+    mk(WC_BUTTONW, L"保存する", WS_TABSTOP | BS_DEFPUSHBUTTON, W - S(320), H - S(96), S(130), S(36), IDP_SAVE);
+    mk(WC_BUTTONW, L"閉じる", WS_TABSTOP, W - S(180), H - S(96), S(130), S(36), IDP_CLOSE);
+    int sel = static_cast<int>(SendMessageW(g.combo, CB_GETCURSEL, 0, 0));
+    if (sel < 0 || sel >= static_cast<int>(g_pd.items.size())) sel = 0;
+    g_pd.cur = sel;
+    ProfDlgFillList();
+    if (!g_pd.items.empty()) ProfDlgLoadFields(sel);
+    EnableWindow(g.hwnd, FALSE);  // 開いている間は、もとの窓を操作しない
+    ShowWindow(hwnd, SW_SHOW);
 }
 
 void ToggleClicked(int i) {
@@ -1428,11 +1947,13 @@ void StartDeploy(bool scheduled, const std::vector<std::wstring>* onlyApps = nul
     RefreshInstalled();
     bool office = g.toggleOn[0], adobe = g.toggleOn[1], apps = g.toggleOn[2] && g.appsAvailable;
     bool removeOffice = WillRemove(0), removeAdobe = WillRemove(1);
+    const std::wstring extraNames = onlyApps ? std::wstring() : ProfileExtraNames(SelectedProfilePath());  // プロファイルで決めた追加のアプリ
+    const bool extras = !extraNames.empty();
     if (onlyApps) {
         office = adobe = removeOffice = removeAdobe = false;
         apps = true;
     }
-    if (!office && !adobe && !apps && !removeOffice && !removeAdobe) {
+    if (!office && !adobe && !apps && !removeOffice && !removeAdobe && !extras) {
         MessageBoxW(g.hwnd, L"準備するものを選んでください（Office・Adobe CC・独自アプリのトグルをオンにします）。", kAppName,
                     MB_OK | MB_ICONINFORMATION);
         return;
@@ -1486,6 +2007,7 @@ void StartDeploy(bool scheduled, const std::vector<std::wstring>* onlyApps = nul
             items += L"　※ Adobe のインストーラーは、サインインなどの画面を出して待つことがあります。"
                      L"人がいるときに［今すぐ実行］で行うのがおすすめです（15 分進まなければ打ち切ります）。\n";
     }
+    if (extras) items += L"・この講座で入れるアプリ（" + extraNames + L"）：入っていなければインストール\n";
     if (apps && onlyApps) {
         items += L"・次の独自アプリの最新版の入手と展開（同じ版なら何もしません）\n";
         for (const auto& n : *onlyApps) items += L"　　" + n + L"\n";
@@ -1532,7 +2054,7 @@ void StartDeploy(bool scheduled, const std::vector<std::wstring>* onlyApps = nul
               L"\" -CancelFile \"" + g.deployCancel + L"\"";
     // 0=何もしない 1=入れる 2=削除する
     params += std::wstring(L" -Office ") + (office ? L"1" : removeOffice ? L"2" : L"0") + L" -Adobe " +
-              (adobe ? L"1" : removeAdobe ? L"2" : L"0") + L" -OwnApps " + (apps ? L"1" : L"0");
+              (adobe ? L"1" : removeAdobe ? L"2" : L"0") + L" -OwnApps " + (apps ? L"1" : L"0") + L" -ExtraApps " + (extras ? L"1" : L"0");
     if (!startArg.empty()) params += L" -StartAt \"" + startArg + L"\"";
     if (onlyApps) {
         std::wstring list;
@@ -1582,7 +2104,9 @@ void StartOneClick() {
     RefreshInstalled();
     bool office = g.toggleOn[0], adobe = g.toggleOn[1], apps = g.toggleOn[2] && g.appsAvailable;
     bool removeOffice = WillRemove(0), removeAdobe = WillRemove(1);
-    bool needNet = (office && !g.installed[0]) || (adobe && !g.installed[1]) || apps || removeOffice || removeAdobe;
+    const std::wstring extraNames = ProfileExtraNames(SelectedProfilePath());  // プロファイルで決めた追加のアプリ
+    const bool extras = !extraNames.empty();
+    bool needNet = (office && !g.installed[0]) || (adobe && !g.installed[1]) || apps || removeOffice || removeAdobe || extras;
     if (needNet && !EnsureInternet(L"アプリの入手・インストール・削除ツールの入手には、インターネットが必要です。"
                                    L"Wi-Fi や LAN ケーブルをつないでください。", false))
         return;
@@ -1598,6 +2122,7 @@ void StartOneClick() {
     bool anyApp = false;
     if (office) { ask += L"　・Office：入っていなければインストール\n"; anyApp = true; }
     if (adobe) { ask += L"　・Adobe CC：入っていなければインストール（サインインなどの画面が出ることがあります）\n"; anyApp = true; }
+    if (extras) { ask += L"　・この講座で入れるアプリ（" + extraNames + L"）：入っていなければインストール\n"; anyApp = true; }
     if (apps) { ask += L"　・独自アプリ：最新版を入手して展開\n"; anyApp = true; }
     if (removeOffice) { ask += L"　・Office：削除（元に戻せません）\n"; anyApp = true; }
     if (removeAdobe) { ask += L"　・Adobe CC：削除（元に戻せません）\n"; anyApp = true; }
@@ -1623,7 +2148,7 @@ void StartOneClick() {
     if (!user.empty()) params += L" -ExpectedUser \"" + user + L"\"";
     params += L" -ProtectPath \"" + g.exeDir + L"\"";
     params += std::wstring(L" -Office ") + (office ? L"1" : removeOffice ? L"2" : L"0") + L" -Adobe " +
-              (adobe ? L"1" : removeAdobe ? L"2" : L"0") + L" -OwnApps " + (apps ? L"1" : L"0");
+              (adobe ? L"1" : removeAdobe ? L"2" : L"0") + L" -OwnApps " + (apps ? L"1" : L"0") + L" -ExtraApps " + (extras ? L"1" : L"0");
 
     ApplyJob* job = new ApplyJob();
     job->exe = PowerShellPath();
@@ -2180,7 +2705,7 @@ void AfterDeployForApps() {
 void ShowTab(int t) {
     g.tab = t;
     const int prep = (t == 0) ? SW_SHOW : SW_HIDE, apps = (t == 1) ? SW_SHOW : SW_HIDE;
-    for (HWND h : {g.combo, g.oneclick, g.run, g.apply, g.clean, g.logs, g.tog[0], g.tog[1], g.tog[2], g.runNow, g.runAt, g.timePick, g.list, g.detail})
+    for (HWND h : {g.combo, g.profSet, g.oneclick, g.run, g.apply, g.clean, g.logs, g.tog[0], g.tog[1], g.tog[2], g.runNow, g.runAt, g.timePick, g.list, g.detail})
         if (h) ShowWindow(h, prep);
     for (HWND h : {g.appsAll, g.appsReload})
         if (h) ShowWindow(h, apps);
@@ -2385,11 +2910,13 @@ void Layout() {
     }
     int x = m + S(132);
     RECT cr;
-    MoveWindow(g.combo, x, g.ctrlTop, S(190), S(300), TRUE);
+    MoveWindow(g.combo, x, g.ctrlTop, S(170), S(300), TRUE);
     GetWindowRect(g.combo, &cr);
     int comboH = cr.bottom - cr.top;
-    MoveWindow(g.combo, x, g.ctrlTop + (g.ctrlHeight - comboH) / 2, S(190), S(300), TRUE);
-    x += S(190) + S(18);
+    MoveWindow(g.combo, x, g.ctrlTop + (g.ctrlHeight - comboH) / 2, S(170), S(300), TRUE);
+    x += S(170) + S(6);
+    MoveWindow(g.profSet, x, g.ctrlTop, S(76), g.ctrlHeight, TRUE);
+    x += S(76) + S(16);
     MoveWindow(g.oneclick, x, g.ctrlTop, S(170), g.ctrlHeight, TRUE);
     x += S(170) + S(14);
     MoveWindow(g.run, x, g.ctrlTop, S(110), g.ctrlHeight, TRUE);
@@ -2415,7 +2942,9 @@ void Layout() {
     x += S(170) + S(8);
     MoveWindow(g.timePick, x, g.row2Top + (g.ctrlHeight - comboH) / 2, S(84), comboH, TRUE);
 
-    g.summaryTop = g.row2Top + g.ctrlHeight + S(14);
+    // 3 段目：この講座で入れるアプリ（プロファイルで決まる。トグルは置かない）
+    g.extrasTop = g.row2Top + g.ctrlHeight + S(8);
+    g.summaryTop = g.extrasTop + S(28);
     // 作業ごとの行（準備のときだけ）：1 件 2 段（名前と手順・進み具合のバー／説明）
     g.progressTop = g.summaryTop + S(30);
     g.progressHeight = g.progress.empty() ? 0 : static_cast<int>(g.progress.size()) * S(46) + S(10);
@@ -2608,6 +3137,8 @@ void Paint(HDC target) {
     if (g.tab == 0) {
         DrawTextAt(dc, L"講習プロファイル", m, g.ctrlTop + (g.ctrlHeight - lh) / 2, g.font, kInk);
         DrawTextAt(dc, L"時間のかかる準備", m, g.row2Top + (g.ctrlHeight - lh) / 2, g.font, kInk);
+        DrawTextAt(dc, L"この講座のアプリ", m, g.extrasTop + S(2), g.font, kInk);
+        DrawTextAt(dc, g.extrasText, m + S(132), g.extrasTop + S(2), g.font, g.extrasText.rfind(L"なし", 0) == 0 ? kMuted : kAccent);
     } else {
         PaintApps(dc, rc.right);
     }
@@ -2716,7 +3247,7 @@ void DrawButton(const DRAWITEMSTRUCT* d) {
     }
     const bool primary = (d->CtlID == IDC_ONECLICK || d->CtlID == IDC_APPS_ALL);
     const bool outline = (d->CtlID == IDC_APPS_RELOAD || (d->CtlID >= kIdAppSetup && d->CtlID < kIdAppSetup + 100) ||
-                          d->CtlID == IDC_RUN || d->CtlID == IDC_SHARE || d->CtlID == IDC_APPLY || d->CtlID == IDC_CLEAN || d->CtlID == IDC_RUN_NOW ||
+                          d->CtlID == IDC_RUN || d->CtlID == IDC_SHARE || d->CtlID == IDC_PROFSET || d->CtlID == IDC_APPLY || d->CtlID == IDC_CLEAN || d->CtlID == IDC_RUN_NOW ||
                           d->CtlID == IDC_RUN_AT);
     const COLORREF outlineColor = (d->CtlID == IDC_CLEAN || (d->CtlID == IDC_RUN_AT && g.deploying)) ? kNg : kAccent;
     const bool disabled = (d->itemState & ODS_DISABLED) != 0;
@@ -2809,6 +3340,8 @@ void CreateControls(HWND hwnd) {
                               nullptr);
     g.run = CreateWindowExW(0, WC_BUTTONW, L"点検する", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                             hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_RUN)), g.inst, nullptr);
+    g.profSet = CreateWindowExW(0, WC_BUTTONW, L"設定…", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10, hwnd,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROFSET)), g.inst, nullptr);
     g.share = CreateWindowExW(0, WC_BUTTONW, L"先生用になる", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10,
                               10, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SHARE)), g.inst, nullptr);
     g.oneclick = CreateWindowExW(0, WC_BUTTONW, L"まとめて実行", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10,
@@ -2948,7 +3481,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mm = reinterpret_cast<MINMAXINFO*>(lp);
-            mm->ptMinTrackSize.x = S(1130);
+            mm->ptMinTrackSize.x = S(1180);  // 1 段目（プロファイル・［設定…］・ボタン 5 つ）が収まる幅
             mm->ptMinTrackSize.y = S(560);
             return 0;
         }
@@ -3023,6 +3556,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     SetupApps(idx);
                     return 0;
                 }
+                case IDC_PROFSET:
+                    OpenProfileSettings();
+                    return 0;
                 case IDC_SHARE:
                     share::SetProfilePath(SelectedProfilePath());
                     share::OpenServerWindow(hwnd);
@@ -3518,7 +4054,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
-        if (m.message == WM_KEYDOWN && m.wParam == VK_F5 && !g.running) {
+        if (g_pd.hwnd && IsDialogMessageW(g_pd.hwnd, &m)) continue;  // プロファイルの設定（Tab で項目を移る）
+        if (m.message == WM_KEYDOWN && m.wParam == VK_F5 && !g.running && IsWindowEnabled(hwnd)) {
             StartInspection();
             continue;
         }

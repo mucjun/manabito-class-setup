@@ -1,7 +1,6 @@
 ﻿{
-  "name": "WEB 講座",
-  "description": "HTML・CSS の講座。Adobe CC デスクトップアプリを入れる例。背景色 #1F3A5F・Windows Update を止める（2026-11-20 決定）。",
-
+  "name": "WEB系",
+  "description": "WEB 系の講座。Office・Adobe Creative Cloud デスクトップアプリ・Adobe Acrobat Reader・Visual Studio Code を入れ、PDF は Adobe Acrobat Reader で開く。",
   "wallpaperColor": "#1F3A5F",
   "showFileExtensions": true,
   "taskbarWidgets": "check-only",
@@ -21,9 +20,7 @@
   "signOutApps": true,
   "keepCredentials": [],
   "cleanOnExit": true,
-
   "screen": "check-only",
-
   "office": "install",
   "officeSetupUrl": "https://officecdn.microsoft.com/pr/wsus/setup.exe",
   "officeConfig": "office.xml",
@@ -36,7 +33,8 @@
   "adobeCleanerUrl": "https://swupmf.adobe.com/webfeed/CleanerTool/win/AdobeCreativeCloudCleanerTool.exe",
   "ownAppsManifest": "https://raw.githubusercontent.com/mucjun/manabito-class-setup/main/release/apps.json",
   "adobe": "install",
-
+  "extraApps": "acrobat-reader,vscode",
+  "pdfDefault": "acrobat-reader",
   "ownApps": [
     {
       "name": "まなびとPDFツール",

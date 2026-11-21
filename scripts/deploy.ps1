@@ -19,6 +19,7 @@ param(
     [int]$Office = 0,
     [int]$Adobe = 0,
     [int]$OwnApps = 0,
+    [int]$ExtraApps = 0,
     [string]$OnlyApps = '',
     [string]$StartAt = ''
 )
@@ -27,7 +28,7 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($LogFile) { try { Start-Transcript -LiteralPath $LogFile -Force | Out-Null } catch { } }
 
-foreach ($m in @('common', 'set', 'deploy')) {
+foreach ($m in @('common', 'set', 'extraapps', 'deploy')) {
     . (Join-Path $here ('modules\' + $m + '.ps1'))
 }
 $script:DeployStatusFile = $StatusFile
@@ -83,7 +84,9 @@ if ($ProfilePath) {
 Set-KeepAwake $true
 
 # 画面に出す作業の一覧（手順の数）を先に登録する
-$steps = Register-DeployPlan $Office $Adobe $OwnApps
+$extraCount = 0
+if ($ExtraApps -eq 1) { $extraCount = @(Get-ProfileExtraIds $prof).Count }   # プロファイルで決めた「この講座で入れるアプリ」
+$steps = Register-DeployPlan $Office $Adobe $OwnApps $extraCount
 $script:DeployHead = 'head|run|' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
 
 if ($StartAt) {

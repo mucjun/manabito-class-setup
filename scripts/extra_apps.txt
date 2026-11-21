@@ -1,0 +1,6 @@
+﻿# まなびと講習準備 ― 講座のプロファイルで選べる追加のアプリ（1 行 1 アプリ）
+# Id|画面の名前|winget の ID|入っているかの目印（アンインストール情報の DisplayName。* 可）|PDF を開けるか（1/0）|説明
+# winget：Windows 11 のパッケージ マネージャー。登録された SHA-256 とインストーラーを照らし合わせてから入れる。
+acrobat-reader|Adobe Acrobat Reader|Adobe.Acrobat.Reader.64-bit|Adobe Acrobat*|1|PDF を開く・印刷する。初回の確認と有料版の案内を出さない設定を入れる
+paintdotnet|Paint.NET|dotPDN.PaintDotNet|paint.net*|0|無料の画像編集アプリ
+vscode|Visual Studio Code|Microsoft.VisualStudioCode|Microsoft Visual Studio Code*|0|プログラムや HTML を書くエディター。日本語化の拡張機能も入れる

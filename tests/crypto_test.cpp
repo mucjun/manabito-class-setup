@@ -1,6 +1,7 @@
 // 実行のしかた（x64 Native Tools Command Prompt for VS）:
 //   cd /d C:\dev\ManabitoClassSetup
-//   cl /nologo /std:c++20 /EHsc /utf-8 /DUNICODE /D_UNICODE /DNOMINMAX /Fe:build\crypto_test.exe tests\crypto_test.cpp /link comctl32.lib shell32.lib ole32.lib oleaut32.lib gdi32.lib user32.lib advapi32.lib ws2_32.lib iphlpapi.lib bcrypt.lib crypt32.lib
+//   cl /nologo /std:c++20 /EHsc /utf-8 /DUNICODE /D_UNICODE /DNOMINMAX /Fe:build\crypto_test.exe tests\crypto_test.cpp /link comctl32.lib shell32.lib ole32.lib oleaut32.lib gdi32.lib user32.lib advapi32.lib ws2_32.lib iphlpapi.lib bcrypt.lib crypt32.lib delayimp.lib /DELAYLOAD:comctl32.dll
+//   （delayimp と DELAYLOAD：試験では画面部品を使わないので、読み込みを遅らせる。無いと「序数 345 が見つかりません」で起動しない）
 //   build\crypto_test.exe
 // 本物の鍵・登録には触れない：試験のあいだ LOCALAPPDATA を一時フォルダー（%TEMP%\manabito_crypto_test）に替える。
 
@@ -17,6 +18,7 @@ static void Check(bool ok, const char* what) {
 
 int wmain() {
     InitializeCriticalSection(&g_cs);
+    SetConsoleOutputCP(CP_UTF8);  // 日本語の文字化けを防ぐ（コマンドプロンプトは既定で Shift_JIS）
     // 本物の鍵（teacher_key.bin）と登録（teacher_pin.txt）に触れないよう、一時フォルダーで試す
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);

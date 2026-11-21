@@ -258,7 +258,8 @@ function Get-SignInApps {
         @{ Name = 'iCloud';              Proc = @('iCloudHome', 'iCloudServices', 'iCloudDrive', 'iCloudPhotos', 'iCloudCKKS'); Paths = @("$L\Packages\AppleInc.iCloud_*\LocalCache", "$L\Packages\AppleInc.iCloud_*\LocalState", "$R\Apple Computer\Preferences") },
         @{ Name = 'WhatsApp';            Proc = @('WhatsApp');                Paths = @("$L\Packages\5319275A.WhatsAppDesktop_*\LocalState") },
         @{ Name = 'Spotify';             Proc = @('Spotify');                 Paths = @("$R\Spotify") },
-        @{ Name = 'Notion';              Proc = @('Notion');                  Paths = @("$R\Notion") }
+        @{ Name = 'Notion';              Proc = @('Notion');                  Paths = @("$R\Notion") },
+        @{ Name = 'Visual Studio Code（サインイン・最近開いたもの）'; Proc = @('Code'); Paths = @("$R\Code") }
     )
 }
 
