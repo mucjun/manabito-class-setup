@@ -39,7 +39,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.19.4";
+const wchar_t kVersion[] = L"0.19.5";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -214,7 +214,6 @@ struct App {
     } pendingSelf;  // 独自アプリを入れ終えたあとで、このアプリ自身を更新する
     // 先生用への報告
     bool reporting = false, pairAsked = false;
-    bool printersTried = false;  // 受け取ったプリンターの設定を、［設定をそろえる］［まとめて実行］で入れようとした（閉じるときの片付けに使う）
     // 起動直後は、更新の判断が済むまで先生からの案内などを後回しにする（更新の案内を先に出すため。v0.19.0 の実機で順番が逆だった）
     bool updateDecided = false;
     DWORD startTick = 0;
@@ -1007,6 +1006,8 @@ void FinishElevated(JobResult* res, const std::wstring& tsv, const std::wstring&
     StartInspection(true);
 }
 
+void NotePrintersResult(const std::wstring& tsv);  // 後で定義
+
 void FinishApply(JobResult* res) {
     static const ElevatedText t = {
         L"そろえるのを取りやめました（管理者の確認で「いいえ」が押されました）。設定は変えていません。",
@@ -1016,7 +1017,7 @@ void FinishApply(JobResult* res) {
         L"変えた",
         L"そろえられなかった項目があります。",
     };
-    if (FileExists(g.applyTsv)) g.printersTried = true;  // そろえる作業が動いた（プリンターも入れようとした）
+    NotePrintersResult(g.applyTsv);  // プリンターが入らなかったら、その設定の版を覚える
     FinishElevated(res, g.applyTsv, g.applyLog, t);
 }
 
@@ -1121,6 +1122,42 @@ void FinishClean(JobResult* res) {
 void SendReportNow();  // 先生用への報告（後で定義）
 
 // 更新の判断が済んだか（起動から 60 秒たったら、判断を待たない：確認がいつまでも終わらないときに、案内が出なくならないように）
+// 記録のフォルダーの整理：ファイルが 50 個を超えたら、古いものから消して新しい 30 個を残す（淳さんの提案）
+// 10 分以内に書かれたものは消さない（ほかの作業が書いている途中かもしれないため）。フォルダーの中のファイルだけを消す。
+void TidyLogs() {
+    EnsureLogDir();  // 起動直後は、記録のフォルダーの場所がまだ決まっていないことがある
+    if (g.logDir.empty()) return;
+    struct F {
+        std::wstring path;
+        ULONGLONG time;
+    };
+    std::vector<F> files;
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW((g.logDir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        ULARGE_INTEGER t{};
+        t.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+        t.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        files.push_back({g.logDir + L"\\" + fd.cFileName, t.QuadPart});
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (files.size() <= 50) return;
+    std::sort(files.begin(), files.end(), [](const F& a, const F& b) { return a.time < b.time; });  // 古い順
+    FILETIME nowFt{};
+    GetSystemTimeAsFileTime(&nowFt);
+    ULARGE_INTEGER now{};
+    now.LowPart = nowFt.dwLowDateTime;
+    now.HighPart = nowFt.dwHighDateTime;
+    const ULONGLONG tenMinutes = 10ULL * 60 * 10000000ULL;
+    size_t remove = files.size() - 30;
+    for (size_t i = 0; i < files.size() && remove > 0; ++i) {
+        if (now.QuadPart > files[i].time && now.QuadPart - files[i].time < tenMinutes) continue;
+        if (DeleteFileW(files[i].path.c_str())) --remove;
+    }
+}
+
 bool StartupSettled() { return g.updateDecided || (g.startTick != 0 && GetTickCount() - g.startTick > 60000); }
 
 void FinishInspection(JobResult* res) {
@@ -1229,25 +1266,47 @@ std::string DeclinedPrintersVersion() {
     return b.find_first_not_of("0123456789") == std::string::npos ? b : std::string();
 }
 
-// 閉じるとき：最後の点検で「プリンター（先生用から受け取る）」が「入っていない」なら、受け取った設定を消し、その版を覚える
-// （設定が残っていると、［設定をそろえる］のたびに入れようとし、点検でも「そろっていない」が続くため。淳さんの指定）
-void ForgetFailedPrinters() {
-    const Row* row = nullptr;
-    for (const auto& r : g.rows)
-        if (r.id == L"printers") row = &r;
-    if (!g.printersTried) return;  // 受け取ったばかりで、まだ入れようとしていない設定は消さない
-    if (!row || row->state != L"NG" || row->current.find(L"入っていない") == std::wstring::npos) return;
-    const std::string ver = share::LocalPrintersVersion();
-    const std::wstring cfg = AppDataDir() + L"\\printers.txt";
-    if (!DeleteFileW(cfg.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) return;
-    if (!ver.empty()) {
-        HANDLE h = CreateFileW(DeclinedPrintersPath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h != INVALID_HANDLE_VALUE) {
-            DWORD w = 0;
-            WriteFile(h, ver.data(), static_cast<DWORD>(ver.size()), &w, nullptr);
-            CloseHandle(h);
+// プリンターを入れられなかった設定の版（［設定をそろえる］［まとめて実行］の結果から覚える）
+std::wstring FailedPrintersPath() { return AppDataDir() + L"\\printers_failed.txt"; }
+
+void WriteSmallFile(const std::wstring& path, const std::string& text) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD w = 0;
+    WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &w, nullptr);
+    CloseHandle(h);
+}
+
+// ［設定をそろえる］［まとめて実行］の結果のファイルを見て、プリンターが入らなかったら、その設定の版を覚える（入ったら忘れる）
+// （画面の一覧は、閉じる前の［履歴を消す］などで入れ替わるため、結果のファイルで判断する。v0.19.4 の実機で、閉じても片付かなかった）
+void NotePrintersResult(const std::wstring& tsv) {
+    std::vector<Row> rows;
+    if (!FileExists(tsv) || !LoadResults(tsv, rows)) return;
+    for (const auto& r : rows) {
+        if (r.id != L"printers") continue;
+        if (r.state == L"FAIL") {
+            const std::string ver = share::LocalPrintersVersion();
+            if (!ver.empty()) WriteSmallFile(FailedPrintersPath(), ver);
+        } else if (r.state == L"DONE" || r.state == L"SAME") {
+            DeleteFileW(FailedPrintersPath().c_str());
         }
     }
+}
+
+// 閉じるとき：入らなかった設定がまだ残っていれば消し、その版を「受け取らない版」として覚える（淳さんの指定）
+void ForgetFailedPrinters() {
+    std::string failed;
+    if (!ReadAllBytes(FailedPrintersPath(), failed)) return;
+    while (!failed.empty() && (failed.back() == '\r' || failed.back() == '\n' || failed.back() == ' ')) failed.pop_back();
+    const std::string ver = share::LocalPrintersVersion();
+    if (failed.empty() || ver != failed) {  // 失敗のあとに新しい設定を受け取っている：その設定はまだ入れようとしていない
+        if (ver != failed) DeleteFileW(FailedPrintersPath().c_str());
+        return;
+    }
+    const std::wstring cfg = AppDataDir() + L"\\printers.txt";
+    if (!DeleteFileW(cfg.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) return;
+    WriteSmallFile(DeclinedPrintersPath(), ver);
+    DeleteFileW(FailedPrintersPath().c_str());
 }
 
 DWORD WINAPI ReportThread(LPVOID param) {
@@ -1362,7 +1421,6 @@ void FinishReport(ReportJob* job) {
     const bool inspect = job->inspect, needPair = job->needPair;
     const std::string pushId = job->pushId;
     if (job->fetched) {
-        g.printersTried = false;  // 新しい設定は、まだ入れようとしていない
         SetSummaryText(job->message, kOk);
     } else if (job->fetchFailed && job->printersVersion != g.printersFailVer) {
         g.printersFailVer = job->printersVersion;  // 同じ版の失敗は 1 回だけ知らせる
@@ -2358,7 +2416,7 @@ void FinishDeploy(JobResult* res) {
         L"うまくいかなかったものがあります。",
     };
     const bool wasOneClick = g.oneClick;
-    if (wasOneClick && FileExists(g.deployTsv)) g.printersTried = true;  // まとめて実行（設定をそろえるを含む）が動いた
+    if (wasOneClick) NotePrintersResult(g.deployTsv);  // まとめて実行（設定をそろえるを含む）の結果
     g.oneClick = false;
     FinishElevated(res, g.deployTsv, g.deployLog, wasOneClick ? t1 : t);
     AfterDeployForApps();
@@ -3677,6 +3735,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_APP_STARTUP:
             g.startTick = GetTickCount();
+            TidyLogs();  // 記録のフォルダーが 50 個を超えていたら、新しい 30 個を残して整理する
             SetTimer(hwnd, kTimerReport, 30000, nullptr);  // 先生用への報告（先生用が見つかったときだけ送る）
             ShowUpdateResult();
             CheckSacOnStartup();
@@ -3741,7 +3800,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
-            if (!g.running) ForgetFailedPrinters();  // 作業の途中は、その設定を使っているかもしれないので消さない
+            if (!g.applying && !g.deploying) ForgetFailedPrinters();  // プリンターを入れる作業の途中だけは消さない（履歴を消している途中は消してよい）
             share::Shutdown();
             PostQuitMessage(0);
             return 0;

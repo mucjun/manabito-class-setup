@@ -69,7 +69,7 @@ function Get-ItemCount {
 function Test-IsAppFolder {
     param([string]$Path, [string]$AppPath)
     if (-not $AppPath -or -not $Path) { return $false }
-    $p = $Path.TrimEnd('\'); $g = $AppPath.TrimEnd('\')
+    $p = $Path.TrimEnd('\', '/'); $g = $AppPath.TrimEnd('\', '/')
     if ($g.Equals($p, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     if ($g.StartsWith($p + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
     return $p.StartsWith($g + '\', [StringComparison]::OrdinalIgnoreCase)
@@ -142,17 +142,34 @@ function Get-ClassFilesPath {
 function Test-SafeClassFilesPath {
     param([string]$Path)
     if (-not $Path -or -not [System.IO.Path]::IsPathRooted($Path)) { return $false }
-    $p = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $p = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
     if ($p.Length -le 3) { return $false }
     $deny = @($env:USERPROFILE, [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments'),
               (Join-Path $env:USERPROFILE 'Downloads'), $env:WINDIR, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData)
     foreach ($d in $deny) {
         if (-not $d) { continue }
-        $d = $d.TrimEnd('\')
+        $d = $d.TrimEnd('\', '/')
         if ($p -ieq $d) { return $false }
     }
     foreach ($d in @($env:WINDIR, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData)) {
-        if ($d -and $p.StartsWith($d.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ($d -and $p.StartsWith($d.TrimEnd('\', '/') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
     }
     return $true
+}
+
+# 授業ファイルの受け取り先が、ダウンロード・デスクトップのフォルダーそのものか（それならその項目で点検・消去する）。同じなら項目の名前、違えば空
+function Get-ClassFilesOverlap {
+    param([string]$Path)
+    if (-not $Path) { return '' }
+    try { $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/') } catch { return '' }
+    $dl = ''
+    try {
+        $v = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}'
+        if ($v) { $dl = [Environment]::ExpandEnvironmentVariables([string]$v) }
+    } catch { }
+    if (-not $dl -and $env:USERPROFILE) { $dl = Join-Path $env:USERPROFILE 'Downloads' }
+    if ($dl -and $full -ieq ([System.IO.Path]::GetFullPath($dl).TrimEnd('\', '/'))) { return 'ダウンロード フォルダー' }
+    $desk = [Environment]::GetFolderPath('Desktop')
+    if ($desk -and $full -ieq ([System.IO.Path]::GetFullPath($desk).TrimEnd('\', '/'))) { return 'デスクトップのファイル' }
+    return ''
 }

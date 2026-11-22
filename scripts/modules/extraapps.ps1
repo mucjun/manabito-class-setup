@@ -61,8 +61,7 @@ function Test-ExtraApps {
         if ($hit) { $rows += New-Row ('extra-' + $id) $app.Name 'OK' ('入っている（' + $hit.Version + '）') '入っている' $app.Note }
         else { $rows += New-Row ('extra-' + $id) $app.Name 'NG' '入っていない' '入っている' ($app.Note + '。［まとめて実行］か［今すぐ実行］で入ります。') }
     }
-    $pdf = [string](Get-Pref $Prof 'pdfDefault' '')
-    if ($pdf) { $rows += Test-PdfDefault $Prof }
+    # PDF を開くアプリは点検しない（サインインし直すまで切り替わらず、点検では分かりにくいため。淳さんの指定）。設定は［設定をそろえる］で行う
     return $rows
 }
 

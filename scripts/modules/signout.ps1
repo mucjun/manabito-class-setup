@@ -205,7 +205,8 @@ function Get-RemovableCredentials {
     $all = Get-CmdkeyGeneric
     if ($null -eq $all) { return $null }
     $keep = @('virtualapp/didlogical', 'SSO_POP_Device', 'SSO_POP_User') + @(Get-Pref $Prof 'keepCredentials' @())
-    return @($all | Where-Object {
+    # 「,」を付けて一覧のまま返す（付けないと、0 件のとき PowerShell が $null に変え、点検が「調べられません」になっていた。v0.19.4 の実機で判明）
+    return ,@($all | Where-Object {
         $t = $_
         -not ($keep | Where-Object { $_ -and $t.IndexOf([string]$_, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
     })

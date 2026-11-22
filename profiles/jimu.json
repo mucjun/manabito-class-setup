@@ -35,11 +35,5 @@
   "adobe": "skip",
   "extraApps": "acrobat-reader,paintdotnet",
   "pdfDefault": "acrobat-reader",
-  "ownApps": [
-    {
-      "name": "まなびとPDFツール",
-      "folder": "C:\\Program Files\\Org_Apps\\Manabito_Pdf_Tool",
-      "exe": "ManabitoPdfTool.exe"
-    }
-  ]
+  "ownApps": []
 }

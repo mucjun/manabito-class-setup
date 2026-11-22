@@ -204,6 +204,8 @@ function Test-ClassFiles {
     param($Prof)
     $p = Get-ClassFilesPath
     $name = '受け取った授業ファイル'
+    $same = Get-ClassFilesOverlap $p
+    if ($same) { return New-Row 'classfiles' $name 'NA' ('受け取る場所：' + $p) '空' ('受け取る場所が「' + $same + '」と同じため、その項目で点検・消去します。') }
     if (-not (Test-Path -LiteralPath $p)) { return New-Row 'classfiles' $name 'OK' 'なし' '空' $p }
     $n = @(Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue).Count
     $state = 'NG'; if ($n -eq 0) { $state = 'OK' }

@@ -359,6 +359,8 @@ function Clear-ClassFiles {
     param($Prof)
     $name = '受け取った授業ファイル'
     $p = Get-ClassFilesPath
+    $same = Get-ClassFilesOverlap $p
+    if ($same) { return New-Row 'classfiles' $name 'SKIP' '' '空' ('受け取る場所（' + $p + '）が「' + $same + '」と同じため、その項目で消しています。') }
     if (-not (Test-Path -LiteralPath $p)) { return New-Row 'classfiles' $name 'SAME' 'なし' '空' '' }
     if (-not (Test-SafeClassFilesPath $p)) {
         return New-Row 'classfiles' $name 'FAIL' '' '空' ('受け取る場所（' + $p + '）が、ドライブの直下や利用者のフォルダーそのものなどのため、念のため消していません。')
