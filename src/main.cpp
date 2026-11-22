@@ -39,7 +39,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.19.3";
+const wchar_t kVersion[] = L"0.19.4";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -214,6 +214,7 @@ struct App {
     } pendingSelf;  // 独自アプリを入れ終えたあとで、このアプリ自身を更新する
     // 先生用への報告
     bool reporting = false, pairAsked = false;
+    bool printersTried = false;  // 受け取ったプリンターの設定を、［設定をそろえる］［まとめて実行］で入れようとした（閉じるときの片付けに使う）
     // 起動直後は、更新の判断が済むまで先生からの案内などを後回しにする（更新の案内を先に出すため。v0.19.0 の実機で順番が逆だった）
     bool updateDecided = false;
     DWORD startTick = 0;
@@ -1015,6 +1016,7 @@ void FinishApply(JobResult* res) {
         L"変えた",
         L"そろえられなかった項目があります。",
     };
+    if (FileExists(g.applyTsv)) g.printersTried = true;  // そろえる作業が動いた（プリンターも入れようとした）
     FinishElevated(res, g.applyTsv, g.applyLog, t);
 }
 
@@ -1217,6 +1219,37 @@ struct ReportJob {
     std::wstring message;
 };
 
+// 入らなかったプリンターの設定の版（閉じるときに覚える。この版はもう受け取らない。先生が配り直すと版が変わり、また受け取る）
+std::wstring DeclinedPrintersPath() { return AppDataDir() + L"\\printers_declined.txt"; }
+
+std::string DeclinedPrintersVersion() {
+    std::string b;
+    if (!ReadAllBytes(DeclinedPrintersPath(), b)) return std::string();
+    while (!b.empty() && (b.back() == '\r' || b.back() == '\n' || b.back() == ' ')) b.pop_back();
+    return b.find_first_not_of("0123456789") == std::string::npos ? b : std::string();
+}
+
+// 閉じるとき：最後の点検で「プリンター（先生用から受け取る）」が「入っていない」なら、受け取った設定を消し、その版を覚える
+// （設定が残っていると、［設定をそろえる］のたびに入れようとし、点検でも「そろっていない」が続くため。淳さんの指定）
+void ForgetFailedPrinters() {
+    const Row* row = nullptr;
+    for (const auto& r : g.rows)
+        if (r.id == L"printers") row = &r;
+    if (!g.printersTried) return;  // 受け取ったばかりで、まだ入れようとしていない設定は消さない
+    if (!row || row->state != L"NG" || row->current.find(L"入っていない") == std::wstring::npos) return;
+    const std::string ver = share::LocalPrintersVersion();
+    const std::wstring cfg = AppDataDir() + L"\\printers.txt";
+    if (!DeleteFileW(cfg.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) return;
+    if (!ver.empty()) {
+        HANDLE h = CreateFileW(DeclinedPrintersPath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD w = 0;
+            WriteFile(h, ver.data(), static_cast<DWORD>(ver.size()), &w, nullptr);
+            CloseHandle(h);
+        }
+    }
+}
+
 DWORD WINAPI ReportThread(LPVOID param) {
     ReportJob* job = static_cast<ReportJob*>(param);
     share::ReportReply reply;
@@ -1231,7 +1264,8 @@ DWORD WINAPI ReportThread(LPVOID param) {
         if (!reply.printersVersion.empty()) {
             if (!job->teacher.paired || reply.fingerprint != job->teacher.fingerprint) {
                 job->needPair = true;  // 配られているが、この先生の PC を登録していない
-            } else if (VersionNewer(reply.printersVersion, share::LocalPrintersVersion())) {
+            } else if (VersionNewer(reply.printersVersion, share::LocalPrintersVersion()) &&
+                       reply.printersVersion != DeclinedPrintersVersion()) {  // 入らなかった版は、もう受け取らない
                 job->fetched = share::FetchPrinters(job->teacher, job->message);
                 job->fetchFailed = !job->fetched;
             }
@@ -1328,6 +1362,7 @@ void FinishReport(ReportJob* job) {
     const bool inspect = job->inspect, needPair = job->needPair;
     const std::string pushId = job->pushId;
     if (job->fetched) {
+        g.printersTried = false;  // 新しい設定は、まだ入れようとしていない
         SetSummaryText(job->message, kOk);
     } else if (job->fetchFailed && job->printersVersion != g.printersFailVer) {
         g.printersFailVer = job->printersVersion;  // 同じ版の失敗は 1 回だけ知らせる
@@ -2323,6 +2358,7 @@ void FinishDeploy(JobResult* res) {
         L"うまくいかなかったものがあります。",
     };
     const bool wasOneClick = g.oneClick;
+    if (wasOneClick && FileExists(g.deployTsv)) g.printersTried = true;  // まとめて実行（設定をそろえるを含む）が動いた
     g.oneClick = false;
     FinishElevated(res, g.deployTsv, g.deployLog, wasOneClick ? t1 : t);
     AfterDeployForApps();
@@ -3705,6 +3741,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
+            if (!g.running) ForgetFailedPrinters();  // 作業の途中は、その設定を使っているかもしれないので消さない
             share::Shutdown();
             PostQuitMessage(0);
             return 0;
