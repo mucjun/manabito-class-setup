@@ -516,6 +516,7 @@ struct PcReport {
     bool inspectReq = false;
 };
 std::map<std::wstring, PcReport> g_reports;  // PC 名ごと（g_cs で守る）
+unsigned g_reportsVersion = 0;               // 報告が届くたびに増やす（画面は、変わったときだけ書き直す。g_cs で守る）
 const size_t kMaxPcs = 200;
 
 // ---- 先生の PC：配っているプリンターの設定（g_cs で守る）
@@ -1027,10 +1028,12 @@ void ServeReport(Conn& c, const std::wstring& ip, const std::vector<std::string>
             it->second.at = r.at;
             it->second.ip = ip;
             it->second.inspectReq = false;
+            ++g_reportsVersion;
         } else {
             if (it != g_reports.end()) inspect = it->second.inspectReq;
             r.inspectReq = false;
             g_reports[r.name] = r;
+            ++g_reportsVersion;
         }
         ver = g_prnVersion;
         fp = g_tkey.fp;
@@ -1336,6 +1339,13 @@ enum : int {
     IDS_PRN_RELOAD,  // ［一覧を読み直す］
     IDS_PRN_STATUS,  // 教室の PC のプリンターの状態
     IDS_PUSH,        // ［登録済みの PC に自動で配る］／［自動で配るのをやめる］
+    IDS_MAN_NAME,    // IP アドレスで加える：名前
+    IDS_MAN_HOST,    //   IP アドレス（ホスト名）
+    IDS_MAN_PORT,    //   ポート
+    IDS_MAN_PATH,    //   パス
+    IDS_MAN_TEST,    //   ［つながるか確かめる］
+    IDS_MAN_ADD,     //   ［一覧に加える］
+    IDS_MAN_REMOVE,  //   ［選んだものを外す］
 };
 const UINT_PTR kServerTimer = 11;
 HFONT g_sfont = nullptr, g_sbig = nullptr, g_sbold = nullptr;
@@ -1507,7 +1517,7 @@ void PollPrep(HWND hwnd, int k) {
     }
     if (text != p.text) {
         p.text = text;
-        InvalidateRect(hwnd, nullptr, TRUE);
+        InvalidateRect(hwnd, nullptr, FALSE);  // 裏で描いてから写すので、背景は消さない（ちらつかない）
     }
 }
 
@@ -1518,16 +1528,22 @@ const UINT kPrnListDone = WM_APP + 61;
 
 struct PrnRow {
     std::wstring name, host, proto, driver, why;
+    std::wstring path;     // IPP のパス（例 /ipp/print）
     int port = 0;
     bool def = false, ok = false;
+    bool manual = false;   // IP アドレスで加えたもの（先生の PC には入っていない）
 };
-std::vector<PrnRow> g_prnRows;  // 画面のスレッドだけで使う
+std::vector<PrnRow> g_prnRows;    // 画面のスレッドだけで使う
+std::vector<PrnRow> g_prnManual;  // IP アドレスで加えたもの（printers_manual.txt に覚える）
+bool g_prnManualLoaded = false;
+std::wstring g_prnCheckNew;       // 次に一覧を作るとき、チェックを付けておく名前（加えたばかりのもの）
+const wchar_t* kIppDriver = L"Microsoft IPP Class Driver";  // Windows に入っている IPP のドライバー
 bool g_prnLoading = false;
 std::wstring g_prnText;  // ［プリンター］タブの「配っている設定」の文
 
 // レイアウトの位置（LayoutServer が決め、PaintServer が使う）
 struct ServerLayout {
-    int tabTop = 0, contentTop = 0, prnRowTop = 0, prnStatusLabelTop = 0;
+    int tabTop = 0, contentTop = 0, prnRowTop = 0, prnStatusLabelTop = 0, manRowTop = 0, prnTextTop = 0;
 } g_sl;
 
 const wchar_t* kTabNames[3] = {L"教室の PC", L"配る", L"プリンター"};
@@ -1632,6 +1648,168 @@ DWORD WINAPI PrnListThread(LPVOID param) {
     return 0;
 }
 
+// ---- IP アドレスで加えるプリンター（v0.19.2）
+void FillPrinterList(HWND hwnd);  // 後で定義
+
+void LoadManualPrinters() {
+    if (g_prnManualLoaded) return;
+    g_prnManualLoaded = true;
+    std::vector<BYTE> b;
+    if (!ReadWholeFile(AppDataDir() + L"\\printers_manual.txt", b, 64 * 1024)) return;
+    std::string t(b.begin(), b.end());
+    size_t pos = 0;
+    while (pos < t.size()) {
+        size_t nl = t.find('\n', pos);
+        std::string line = t.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        pos = nl == std::string::npos ? t.size() : nl + 1;
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        auto f = SplitBar(line);
+        if (f.size() < 5 || f[0] != "m") continue;
+        PrnRow r;
+        r.name = FromUtf8(f[1]);
+        r.host = FromUtf8(f[2]);
+        r.port = atoi(f[3].c_str());
+        r.path = FromUtf8(f[4]);
+        r.proto = L"ipp";
+        r.driver = kIppDriver;
+        r.ok = r.manual = true;
+        g_prnManual.push_back(r);
+    }
+}
+
+void SaveManualPrinters() {
+    std::string t;
+    for (const auto& r : g_prnManual) t += "m|" + ToUtf8(r.name) + "|" + ToUtf8(r.host) + "|" + std::to_string(r.port) + "|" + ToUtf8(r.path) + "\r\n";
+    MakeDirs(AppDataDir());
+    WriteFileAtomic(AppDataDir() + L"\\printers_manual.txt", t.data(), t.size());
+}
+
+// 入力を確かめる。間違いがあれば、画面に出す文を返す（正しければ空）
+std::wstring CheckManualPrinter(const std::wstring& name, const std::wstring& host, const std::wstring& portText, const std::wstring& path, int& port) {
+    if (name.empty() || name.size() > 60) return L"名前を 1〜60 文字で入れてください。";
+    for (wchar_t c : name)
+        if (c < 0x20 || c == L'|' || c == L'\\' || c == L',' || c == L'!') return L"名前に「|」「\\」「,」「!」は使えません。";
+    if (host.empty() || host.size() > 253) return L"IP アドレス（またはホスト名）を入れてください。";
+    for (wchar_t c : host)
+        if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || c == L'.' || c == L'-'))
+            return L"IP アドレス（ホスト名）に使えない文字があります（使えるのは英数字と「.」「-」）。";
+    if (host[0] == L'.' || host[0] == L'-') return L"IP アドレス（ホスト名）の形が違います。";
+    port = _wtoi(portText.c_str());
+    if (port < 1 || port > 65535 || portText.find_first_not_of(L"0123456789") != std::wstring::npos) return L"ポートは 1〜65535 の数字で入れてください（ふつうは 631）。";
+    if (path.empty() || path[0] != L'/' || path.size() > 100) return L"パスは「/」で始めてください（ふつうは /ipp/print）。";
+    for (wchar_t c : path)
+        if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || c == L'/' || c == L'_' || c == L'-' || c == L'.'))
+            return L"パスに使えない文字があります（使えるのは英数字と「/」「_」「-」「.」）。";
+    for (const auto& r : g_prnRows)
+        if (_wcsicmp(r.name.c_str(), name.c_str()) == 0) return L"同じ名前のプリンターが、もう一覧にあります。";
+    return std::wstring();
+}
+
+// つながるか（TCP で 2 秒まで）
+bool TestTcp(const std::wstring& host, int port) {
+    ADDRINFOW hints{}, *res = nullptr;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (GetAddrInfoW(host.c_str(), std::to_wstring(port).c_str(), &hints, &res) != 0 || !res) return false;
+    bool ok = false;
+    SOCKET sk = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sk != INVALID_SOCKET) {
+        u_long nb = 1;
+        ioctlsocket(sk, FIONBIO, &nb);
+        connect(sk, res->ai_addr, static_cast<int>(res->ai_addrlen));
+        fd_set ws, es;
+        FD_ZERO(&ws);
+        FD_ZERO(&es);
+        FD_SET(sk, &ws);
+        FD_SET(sk, &es);
+        timeval tv{2, 0};
+        ok = select(0, nullptr, &ws, &es, &tv) > 0 && FD_ISSET(sk, &ws) && !FD_ISSET(sk, &es);
+        closesocket(sk);
+    }
+    FreeAddrInfoW(res);
+    return ok;
+}
+
+std::wstring DlgText(HWND hwnd, int id) {
+    HWND h = GetDlgItem(hwnd, id);
+    std::wstring t(static_cast<size_t>(GetWindowTextLengthW(h)) + 1, L'\0');
+    GetWindowTextW(h, &t[0], static_cast<int>(t.size()));
+    t.resize(wcslen(t.c_str()));
+    while (!t.empty() && t.back() == L' ') t.pop_back();
+    while (!t.empty() && t.front() == L' ') t.erase(0, 1);
+    return t;
+}
+
+void ManualTest(HWND hwnd) {
+    int port = 0;
+    const std::wstring host = DlgText(hwnd, IDS_MAN_HOST), portText = DlgText(hwnd, IDS_MAN_PORT);
+    std::wstring err = CheckManualPrinter(L"x", host, portText, L"/", port);
+    if (!err.empty()) {
+        MessageBoxW(hwnd, err.c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    const bool ok = TestTcp(host, port);
+    SetCursor(old);
+    MessageBoxW(hwnd,
+                ok ? (host + L"（ポート " + portText + L"）につながりました。IPP で印刷できる見込みが高いです。").c_str()
+                   : (host + L"（ポート " + portText + L"）につながりませんでした。\n\nIP アドレス・ポートが正しいか、プリンターの電源と、プリンターの設定で IPP が有効になっているかを確かめてください。").c_str(),
+                kAppName, MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+}
+
+void ManualAdd(HWND hwnd) {
+    int port = 0;
+    const std::wstring name = DlgText(hwnd, IDS_MAN_NAME), host = DlgText(hwnd, IDS_MAN_HOST), portText = DlgText(hwnd, IDS_MAN_PORT),
+                       path = DlgText(hwnd, IDS_MAN_PATH);
+    std::wstring err = CheckManualPrinter(name, host, portText, path, port);
+    if (!err.empty()) {
+        MessageBoxW(hwnd, err.c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    PrnRow r;
+    r.name = name;
+    r.host = host;
+    r.port = port;
+    r.path = path;
+    r.proto = L"ipp";
+    r.driver = kIppDriver;
+    r.ok = r.manual = true;
+    g_prnManual.push_back(r);
+    SaveManualPrinters();
+    g_prnRows.push_back(r);
+    g_prnCheckNew = name;  // 加えたものにはチェックを付けておく
+    FillPrinterList(hwnd);
+    SetDlgItemTextW(hwnd, IDS_MAN_NAME, L"");
+    SetDlgItemTextW(hwnd, IDS_MAN_HOST, L"");
+    MessageBoxW(hwnd, (L"「" + name + L"」を一覧に加えました（チェックを付けました）。［チェックしたプリンターを配る］で配ります。").c_str(), kAppName,
+                MB_OK | MB_ICONINFORMATION);
+}
+
+void ManualRemove(HWND hwnd) {
+    HWND lv = GetDlgItem(hwnd, IDS_PRINTERS);
+    int sel = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
+    if (sel < 0) {
+        MessageBoxW(hwnd, L"外すプリンター（IP アドレスで加えたもの）を、一覧で選んでください。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    LVITEMW it{};
+    it.mask = LVIF_PARAM;
+    it.iItem = sel;
+    ListView_GetItem(lv, &it);
+    size_t ri = static_cast<size_t>(it.lParam);
+    if (ri >= g_prnRows.size() || !g_prnRows[ri].manual) {
+        MessageBoxW(hwnd, L"外せるのは、IP アドレスで加えたものだけです（この PC に入っているプリンターは外せません）。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    const std::wstring name = g_prnRows[ri].name;
+    g_prnManual.erase(std::remove_if(g_prnManual.begin(), g_prnManual.end(), [&](const PrnRow& r) { return r.name == name; }), g_prnManual.end());
+    SaveManualPrinters();
+    g_prnRows.erase(g_prnRows.begin() + static_cast<std::ptrdiff_t>(ri));
+    FillPrinterList(hwnd);
+    MessageBoxW(hwnd, (L"「" + name + L"」を一覧から外しました。配るのをやめるときは、［チェックしたプリンターを配る］で配り直してください（受講生の PC に入ったプリンターは消しません）。").c_str(),
+                kAppName, MB_OK | MB_ICONINFORMATION);
+}
+
 void StartPrinterList(HWND hwnd) {
     if (g_prnLoading) return;
     MakeDirs(AppDataDir());
@@ -1675,7 +1853,8 @@ void FillPrinterList(HWND hwnd) {
     int defSel = 0;
     for (size_t i = 0; i < g_prnRows.size(); ++i) {
         const auto& p = g_prnRows[i];
-        std::wstring how = p.ok ? (p.proto == L"ipp" ? L"IPP（" : L"ネットワーク（") + p.host + L":" + std::to_wstring(p.port) + L"）" : L"―";
+        std::wstring how = p.ok ? (p.proto == L"ipp" ? L"IPP（" : L"ネットワーク（") + p.host + L":" + std::to_wstring(p.port) + (p.proto == L"ipp" ? p.path : L"") + L"）" : L"―";
+        if (p.manual) how += L"・IP アドレスで加えたもの";
         LVITEMW it{};
         it.mask = LVIF_TEXT | LVIF_PARAM;
         it.iItem = static_cast<int>(i);
@@ -1687,13 +1866,14 @@ void FillPrinterList(HWND hwnd) {
         std::wstring can = p.ok ? std::wstring(L"配れます") + (p.def ? L"（この PC の既定）" : L"") : p.why;
         ListView_SetItemText(lv, idx, 3, const_cast<LPWSTR>(can.c_str()));
         if (p.ok) {
-            if (shared.count(p.name)) ListView_SetCheckState(lv, idx, TRUE);
+            if (shared.count(p.name) || p.name == g_prnCheckNew) ListView_SetCheckState(lv, idx, TRUE);
             int ci = static_cast<int>(SendMessageW(cb, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(p.name.c_str())));
             SendMessageW(cb, CB_SETITEMDATA, ci, static_cast<LPARAM>(i));
             if ((!sharedDef.empty() && p.name == sharedDef) || (sharedDef.empty() && shared.empty() && p.def)) defSel = ci;
         }
     }
     SendMessageW(cb, CB_SETCURSEL, defSel, 0);
+    g_prnCheckNew.clear();
 }
 
 void FinishPrinterList(HWND hwnd, PrnListJob* job) {
@@ -1724,11 +1904,18 @@ void FinishPrinterList(HWND hwnd, PrnListJob* job) {
             r.def = (f[6] == "1");
             r.ok = (f[7] == "1") && !r.host.empty() && r.port > 0 && r.port < 65536 && (r.proto == L"raw" || r.proto == L"ipp");
             r.why = FromUtf8(f[8]);
+            r.path = (f.size() >= 10 && !f[9].empty()) ? FromUtf8(f[9]) : L"/ipp/print";
             g_prnRows.push_back(r);
         }
     }
     DeleteFileW(job->out.c_str());
     delete job;
+    LoadManualPrinters();
+    for (const auto& m : g_prnManual) {  // IP アドレスで加えたもの（この PC にある同じ名前のものを優先）
+        bool dup = false;
+        for (const auto& r : g_prnRows) dup = dup || _wcsicmp(r.name.c_str(), m.name.c_str()) == 0;
+        if (!dup) g_prnRows.push_back(m);
+    }
     FillPrinterList(hwnd);
     g_prnText = err.empty() ? DescribeSharedPrinters() : err;
     InvalidateRect(hwnd, nullptr, TRUE);
@@ -1791,7 +1978,7 @@ void SharePrinters(HWND hwnd) {
                 return ToUtf8(t);
             };
             body += "p|" + clean(p->name) + "|" + clean(p->host) + "|" + clean(p->proto) + "|" + std::to_string(p->port) + "|" + clean(p->driver) + "|" +
-                    (p->name == defName ? "1" : "0") + "\r\n";
+                    (p->name == defName ? "1" : "0") + "|" + (p->proto == L"ipp" ? clean(p->path) : std::string()) + "\r\n";
         }
         if (!SignWithTeacherKey(body, sig)) {
             MessageBoxW(hwnd, L"署名できませんでした。配るのをやめます。", kAppName, MB_OK | MB_ICONWARNING);
@@ -1823,10 +2010,68 @@ int PcStatus(const PcReport& r, DWORD now) {
     return r.ng > 0 ? 1 : 0;
 }
 
+// 一覧のセルの文字を、前と違うときだけ書き換える（同じ文字を書くだけでも一覧は描き直されて、ちらつくため）
+void SetCellText(HWND lv, int row, int col, const std::wstring& text) {
+    wchar_t cur[512] = L"";
+    ListView_GetItemText(lv, row, col, cur, 512);
+    if (text.size() < 511 && text == cur) return;
+    ListView_SetItemText(lv, row, col, const_cast<LPWSTR>(text.c_str()));
+}
+
+// 行の数を合わせる（足りなければ空の行を足し、多ければ消す）
+void EnsureRowCount(HWND lv, int n) {
+    while (ListView_GetItemCount(lv) > n) ListView_DeleteItem(lv, ListView_GetItemCount(lv) - 1);
+    while (ListView_GetItemCount(lv) < n) {
+        LVITEMW it{};
+        it.mask = LVIF_TEXT | LVIF_PARAM;
+        it.iItem = ListView_GetItemCount(lv);
+        it.pszText = const_cast<LPWSTR>(L"");
+        it.lParam = -1;
+        ListView_InsertItem(lv, &it);
+    }
+}
+
 bool g_refreshingPcs = false;  // 一覧を作り直している最中（選び直しの知らせで、作り直しを繰り返さないように）
 
-void RefreshPcs(HWND hwnd) {
+// 前回の書き直しのときの印（変わっていなければ書き直さない）
+unsigned g_pcsShownVersion = ~0u;
+DWORD g_pcsShownTick = 0;
+std::wstring g_pcsSummaryShown;
+
+// 集計の文（画面の上）
+std::wstring PcsSummaryText() {
+    int total = 0, ok = 0, warn = 0, off = 0, before = 0;
+    {
+        Lock l(&g_cs);
+        const DWORD now = GetTickCount();
+        for (const auto& kv : g_reports) {
+            ++total;
+            switch (PcStatus(kv.second, now)) {
+                case 0: ++ok; break;
+                case 1: ++warn; break;
+                case 2: ++off; break;
+                default: ++before; break;
+            }
+        }
+    }
+    if (total == 0) return L"まだ報告がありません。受講生の PC で、まなびと講習準備を開いてもらってください（開いていれば 1 分以内に知らせます）。";
+    return std::to_wstring(total) + L" 台　　準備できた " + std::to_wstring(ok) + L"　・　要対応 " + std::to_wstring(warn) + L"　・　応答なし " +
+           std::to_wstring(off) + (before ? L"　・　点検前 " + std::to_wstring(before) : L"");
+}
+
+// force：選んだ行が変わったときなど、印に関係なく書き直す
+void RefreshPcs(HWND hwnd, bool force = false) {
     if (g_refreshingPcs) return;
+    unsigned ver;
+    {
+        Lock l(&g_cs);
+        ver = g_reportsVersion;
+    }
+    const DWORD nowTick = GetTickCount();
+    // 報告が届いていなければ、10 秒に 1 回だけ（「応答なし」への変わり目のため）
+    if (!force && ver == g_pcsShownVersion && nowTick - g_pcsShownTick < 10000) return;
+    g_pcsShownVersion = ver;
+    g_pcsShownTick = nowTick;
     g_refreshingPcs = true;
     HWND lv = GetDlgItem(hwnd, IDS_PCS);
     std::vector<PcReport> list;
@@ -1835,16 +2080,14 @@ void RefreshPcs(HWND hwnd) {
         for (const auto& kv : g_reports) list.push_back(kv.second);
     }
     const DWORD now = GetTickCount();
-    // 選んでいる PC を、並べ替えのあとも選んだままにする
     std::wstring selName;
     int sel = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
     if (sel >= 0) {
-        wchar_t b[128] = L"";
-        ListView_GetItemText(lv, sel, 0, b, 128);
-        selName = b;
+        wchar_t b0[128] = L"";
+        ListView_GetItemText(lv, sel, 0, b0, 128);
+        selName = b0;
     }
-    SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
-    while (ListView_GetItemCount(lv) > static_cast<int>(list.size())) ListView_DeleteItem(lv, ListView_GetItemCount(lv) - 1);
+    EnsureRowCount(lv, static_cast<int>(list.size()));
     static const wchar_t* kStatus[4] = {L"準備できた", L"要対応", L"応答なし", L"点検前"};
     for (size_t i = 0; i < list.size(); ++i) {
         const auto& r = list[i];
@@ -1854,29 +2097,27 @@ void RefreshPcs(HWND hwnd) {
             if (it.state == L"NG" || it.state == L"ERR") issues += (issues.empty() ? L"" : L"・") + it.name;
         if (issues.empty()) issues = (st == 3) ? L"（まだ点検していません）" : L"なし";
         if (st == 2) issues = L"―";
-        std::wstring cols[8] = {r.name, kStatus[st], issues, ItemCurrent(r, L"office"), ItemCurrent(r, L"health-disk"), ItemCurrent(r, L"health-clock"),
-                                ItemCurrent(r, L"health-battery"), r.at};
-        if (static_cast<int>(i) >= ListView_GetItemCount(lv)) {
+        const std::wstring cols[8] = {r.name, kStatus[st], issues, ItemCurrent(r, L"office"), ItemCurrent(r, L"health-disk"), ItemCurrent(r, L"health-clock"),
+                                      ItemCurrent(r, L"health-battery"), r.at};
+        const int row = static_cast<int>(i);
+        // 色分けに使う lParam（状態）も、変わったときだけ
+        LVITEMW cur{};
+        cur.mask = LVIF_PARAM;
+        cur.iItem = row;
+        ListView_GetItem(lv, &cur);
+        if (cur.lParam != st) {
             LVITEMW it{};
-            it.mask = LVIF_TEXT | LVIF_PARAM;
-            it.iItem = static_cast<int>(i);
-            it.pszText = const_cast<LPWSTR>(cols[0].c_str());
-            it.lParam = st;
-            ListView_InsertItem(lv, &it);
-        } else {
-            LVITEMW it{};
-            it.mask = LVIF_TEXT | LVIF_PARAM;
-            it.iItem = static_cast<int>(i);
-            it.pszText = const_cast<LPWSTR>(cols[0].c_str());
+            it.mask = LVIF_PARAM;
+            it.iItem = row;
             it.lParam = st;
             ListView_SetItem(lv, &it);
+            ListView_RedrawItems(lv, row, row);
         }
-        for (int c = 1; c < 8; ++c) ListView_SetItemText(lv, static_cast<int>(i), c, const_cast<LPWSTR>(cols[c].c_str()));
-        ListView_SetItemState(lv, static_cast<int>(i), r.name == selName ? LVIS_SELECTED : 0, LVIS_SELECTED);
+        for (int c = 0; c < 8; ++c) SetCellText(lv, row, c, cols[c]);
+        const UINT want = (r.name == selName) ? LVIS_SELECTED : 0;
+        if ((ListView_GetItemState(lv, row, LVIS_SELECTED) & LVIS_SELECTED) != want) ListView_SetItemState(lv, row, want, LVIS_SELECTED);
     }
-    SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(lv, nullptr, FALSE);
-    // 選んでいる PC の詳しい様子
+    // 選んでいる PC の詳しい様子（変わったときだけ書き換える）
     std::wstring detail = L"一覧の PC を選ぶと、そろっていない項目と健康状態がここに出ます。";
     for (const auto& r : list) {
         if (r.name != selName) continue;
@@ -1888,11 +2129,19 @@ void RefreshPcs(HWND hwnd) {
         }
     }
     HWND ed = GetDlgItem(hwnd, IDS_PCDETAIL);
-    std::wstring cur(static_cast<size_t>(GetWindowTextLengthW(ed)) + 1, L'\0');
-    GetWindowTextW(ed, &cur[0], static_cast<int>(cur.size()));
-    cur.resize(wcslen(cur.c_str()));
-    if (detail != cur) SetWindowTextW(ed, detail.c_str());  // 変わったときだけ（ちらつき・スクロールが戻るのを防ぐ）
-    InvalidateRect(hwnd, nullptr, FALSE);  // 集計（画面の上の文）
+    std::wstring curText(static_cast<size_t>(GetWindowTextLengthW(ed)) + 1, L'\0');
+    GetWindowTextW(ed, &curText[0], static_cast<int>(curText.size()));
+    curText.resize(wcslen(curText.c_str()));
+    if (detail != curText) SetWindowTextW(ed, detail.c_str());
+    // 集計の文：変わったときだけ、その行だけを描き直す
+    const std::wstring summary = PcsSummaryText();
+    if (summary != g_pcsSummaryShown) {
+        g_pcsSummaryShown = summary;
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        RECT line{0, g_sl.contentTop, rc.right, g_sl.contentTop + MulDiv(34, Dpi(hwnd), 96)};
+        InvalidateRect(hwnd, &line, FALSE);
+    }
     g_refreshingPcs = false;
 }
 
@@ -1908,31 +2157,30 @@ void RefreshPrnStatus(HWND hwnd) {
             rows.push_back({kv.first, item});
         }
     }
-    SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
-    ListView_DeleteAllItems(lv);
+    EnsureRowCount(lv, static_cast<int>(rows.size()));
     for (size_t i = 0; i < rows.size(); ++i) {
-        LVITEMW it{};
-        it.mask = LVIF_TEXT;
-        it.iItem = static_cast<int>(i);
-        it.pszText = const_cast<LPWSTR>(rows[i].first.c_str());
-        int idx = ListView_InsertItem(lv, &it);
+        const int row = static_cast<int>(i);
         std::wstring st = rows[i].second.state == L"OK" ? L"そろっている" : rows[i].second.state == L"NG" ? L"そろっていない" : L"―";
-        ListView_SetItemText(lv, idx, 1, const_cast<LPWSTR>(st.c_str()));
-        ListView_SetItemText(lv, idx, 2, const_cast<LPWSTR>(rows[i].second.current.c_str()));
+        SetCellText(lv, row, 0, rows[i].first);
+        SetCellText(lv, row, 1, st);
+        SetCellText(lv, row, 2, rows[i].second.current);
     }
-    SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(lv, nullptr, FALSE);
 }
 
 void ShowServerTab(HWND hwnd, int t) {
     g_stab = t;
     const int ids0[] = {IDS_PCS, IDS_PCDETAIL, IDS_INSPECT};
     const int ids1[] = {IDS_SOURCES, IDS_REMOVE, IDS_CLEAR, IDS_PUSH, IDS_CLIENTS, IDS_OFFICE, IDS_ADOBE};
-    const int ids2[] = {IDS_PRINTERS, IDS_PRN_DEFAULT, IDS_PRN_SHARE, IDS_PRN_RELOAD, IDS_PRN_STATUS};
+    const int ids2[] = {IDS_PRINTERS, IDS_PRN_DEFAULT, IDS_PRN_SHARE, IDS_PRN_RELOAD, IDS_PRN_STATUS,
+                        IDS_MAN_NAME, IDS_MAN_HOST, IDS_MAN_PORT, IDS_MAN_PATH, IDS_MAN_TEST, IDS_MAN_ADD, IDS_MAN_REMOVE};
     for (int id : ids0) ShowWindow(GetDlgItem(hwnd, id), t == 0 ? SW_SHOW : SW_HIDE);
     for (int id : ids1) ShowWindow(GetDlgItem(hwnd, id), t == 1 ? SW_SHOW : SW_HIDE);
     for (int id : ids2) ShowWindow(GetDlgItem(hwnd, id), t == 2 ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < 3; ++i) InvalidateRect(GetDlgItem(hwnd, IDS_TAB0 + i), nullptr, FALSE);
+    if (t == 0) {
+        g_pcsSummaryShown.clear();
+        RefreshPcs(hwnd, true);
+    }
     if (t == 2 && g_prnRows.empty() && !g_prnLoading) StartPrinterList(hwnd);
     if (t == 2) RefreshPrnStatus(hwnd);
     InvalidateRect(hwnd, nullptr, TRUE);
@@ -1993,23 +2241,16 @@ void RefreshClients(HWND hwnd) {
         Lock l(&g_cs);
         for (const auto& kv : g_clients) list.push_back(kv.second);
     }
-    int count = ListView_GetItemCount(lv);
+    EnsureRowCount(lv, static_cast<int>(list.size()));
     for (size_t i = 0; i < list.size(); ++i) {
         const auto& c = list[i];
         std::wstring pct = c.total ? std::to_wstring(static_cast<int>(c.sent * 100 / c.total)) + L"%" : L"―";
         std::wstring amount = FormatBytes(c.sent) + L" / " + FormatBytes(c.total);
-        if (static_cast<int>(i) >= count) {
-            LVITEMW it{};
-            it.mask = LVIF_TEXT;
-            it.iItem = static_cast<int>(i);
-            it.pszText = const_cast<LPWSTR>(c.name.c_str());
-            ListView_InsertItem(lv, &it);
-        } else {
-            ListView_SetItemText(lv, static_cast<int>(i), 0, const_cast<LPWSTR>(c.name.c_str()));
-        }
-        ListView_SetItemText(lv, static_cast<int>(i), 1, const_cast<LPWSTR>(c.state.c_str()));
-        ListView_SetItemText(lv, static_cast<int>(i), 2, const_cast<LPWSTR>(amount.c_str()));
-        ListView_SetItemText(lv, static_cast<int>(i), 3, const_cast<LPWSTR>(pct.c_str()));
+        const int row = static_cast<int>(i);
+        SetCellText(lv, row, 0, c.name);
+        SetCellText(lv, row, 1, c.state);
+        SetCellText(lv, row, 2, amount);
+        SetCellText(lv, row, 3, pct);
     }
 }
 
@@ -2288,6 +2529,22 @@ void CreateServerTabControls(HWND hwnd) {
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_PRN_SHARE)), g_inst, nullptr);
     CreateWindowExW(0, WC_BUTTONW, L"一覧を読み直す", WS_CHILD | WS_TABSTOP, 0, 0, 10, 10, hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_PRN_RELOAD)), g_inst, nullptr);
+    {
+        struct EditDef { int id; const wchar_t* cue; const wchar_t* init; };
+        const EditDef eds[] = {{IDS_MAN_NAME, L"名前（例 教室-複合機）", L""}, {IDS_MAN_HOST, L"IP アドレス（例 192.168.1.50）", L""},
+                               {IDS_MAN_PORT, L"ポート", L"631"}, {IDS_MAN_PATH, L"パス", L"/ipp/print"}};
+        for (const auto& e : eds) {
+            HWND ed = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, e.init, WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10, hwnd,
+                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(e.id)), g_inst, nullptr);
+            SendMessageW(ed, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(e.cue));
+        }
+        CreateWindowExW(0, WC_BUTTONW, L"つながるか確かめる", WS_CHILD | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_MAN_TEST)), g_inst, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"一覧に加える", WS_CHILD | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_MAN_ADD)), g_inst, nullptr);
+        CreateWindowExW(0, WC_BUTTONW, L"選んだものを外す", WS_CHILD | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_MAN_REMOVE)), g_inst, nullptr);
+    }
     HWND st = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_NOSORTHEADER, 0, 0, 10, 10, hwnd,
                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_PRN_STATUS)), g_inst, nullptr);
     ListView_SetExtendedListViewStyle(st, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
@@ -2369,7 +2626,25 @@ void LayoutServer(HWND hwnd) {
     const int comboH = cr.bottom - cr.top;
     MoveWindow(GetDlgItem(hwnd, IDS_PRN_SHARE), m + S(412), g_sl.prnRowTop + (comboH - S(32)) / 2, S(250), S(32), TRUE);
     MoveWindow(GetDlgItem(hwnd, IDS_PRN_RELOAD), m + S(672), g_sl.prnRowTop + (comboH - S(32)) / 2, S(150), S(32), TRUE);
-    g_sl.prnStatusLabelTop = g_sl.prnRowTop + std::max(comboH, S(32)) + S(34);
+    // IP アドレスで加える（2 段）
+    g_sl.manRowTop = g_sl.prnRowTop + std::max(comboH, S(32)) + S(12);
+    {
+        int x = m + S(150);
+        const int my = g_sl.manRowTop;
+        MoveWindow(GetDlgItem(hwnd, IDS_MAN_NAME), x, my, S(200), S(28), TRUE);
+        x += S(208);
+        MoveWindow(GetDlgItem(hwnd, IDS_MAN_HOST), x, my, S(220), S(28), TRUE);
+        x += S(228);
+        MoveWindow(GetDlgItem(hwnd, IDS_MAN_PORT), x, my, S(70), S(28), TRUE);
+        x += S(78);
+        MoveWindow(GetDlgItem(hwnd, IDS_MAN_PATH), x, my, S(140), S(28), TRUE);
+        const int y2 = my + S(36);
+        MoveWindow(GetDlgItem(hwnd, IDS_MAN_TEST), m + S(150), y2, S(180), S(30), TRUE);
+        MoveWindow(GetDlgItem(hwnd, IDS_MAN_ADD), m + S(340), y2, S(140), S(30), TRUE);
+        MoveWindow(GetDlgItem(hwnd, IDS_MAN_REMOVE), m + S(490), y2, S(170), S(30), TRUE);
+    }
+    g_sl.prnTextTop = g_sl.manRowTop + S(74);
+    g_sl.prnStatusLabelTop = g_sl.prnTextTop + S(44);
     const int stTop = g_sl.prnStatusLabelTop + S(24);
     MoveWindow(GetDlgItem(hwnd, IDS_PRN_STATUS), m, stTop, W - 2 * m, std::max(S(60), bottom - stTop), TRUE);
     SetColumns(GetDlgItem(hwnd, IDS_PRN_STATUS), {20, 16, 64});
@@ -2479,9 +2754,12 @@ void PaintServer(HWND hwnd, HDC dc) {
                   DT_SINGLELINE | DT_LEFT | DT_END_ELLIPSIS);
         RECT rd{m, g_sl.prnRowTop + S(4), m + S(96), g_sl.prnRowTop + S(30)};
         DrawTextW(dc, L"既定にする：", -1, &rd, DT_SINGLELINE | DT_LEFT);
+        RECT rm{m, g_sl.manRowTop + S(4), m + S(148), g_sl.manRowTop + S(30)};
+        DrawTextW(dc, L"IP アドレスで加える：", -1, &rm, DT_SINGLELINE | DT_LEFT);
         SetTextColor(dc, muted);
-        RECT rs{m, g_sl.prnRowTop + S(42), rc.right - m, g_sl.prnStatusLabelTop - S(2)};
-        std::wstring pt = g_prnText + L"\nドライバーは、受講生の PC にもうあるもの（Windows に入っているものを含む）を使います。無い PC では、点検で知らせます。";
+        RECT rs{m, g_sl.prnTextTop, rc.right - m, g_sl.prnStatusLabelTop - S(2)};
+        std::wstring pt = g_prnText +
+                          L"\nIP アドレスで加えたものは、Windows に入っている IPP のドライバーで入ります（メーカーのドライバーは要りません）。この PC のプリンターは、受講生の PC にも同じドライバーが要ります。";
         DrawTextW(dc, pt.c_str(), -1, &rs, DT_WORDBREAK | DT_LEFT | DT_END_ELLIPSIS);
         SetTextColor(dc, ink);
         RECT r7{m, g_sl.prnStatusLabelTop, rc.right - m, g_sl.prnStatusLabelTop + S(20)};
@@ -2535,9 +2813,24 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_ERASEBKGND:
             return 1;
         case WM_PAINT: {
+            // 裏の画用紙に描いてから一度に写す（描きかけの状態が見えて、ちらつかないように）
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
-            PaintServer(hwnd, dc);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            HDC mem = CreateCompatibleDC(dc);
+            HBITMAP bmp = CreateCompatibleBitmap(dc, std::max<LONG>(1, rc.right), std::max<LONG>(1, rc.bottom));
+            if (mem && bmp) {
+                HGDIOBJ oldBmp = SelectObject(mem, bmp);
+                PaintServer(hwnd, mem);
+                BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left, ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left,
+                       ps.rcPaint.top, SRCCOPY);
+                SelectObject(mem, oldBmp);
+            } else {
+                PaintServer(hwnd, dc);  // 画用紙を作れないとき（ふつうは無い）は、そのまま描く
+            }
+            if (bmp) DeleteObject(bmp);
+            if (mem) DeleteDC(mem);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -2552,7 +2845,20 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 for (int k = 0; k < kPkgCount; ++k) PollPrep(hwnd, k);
                 if (g_stab == 0) RefreshPcs(hwnd);
                 if (g_stab == 2 && tickCount % 6 == 0) RefreshPrnStatus(hwnd);  // 3 秒ごと
-                if (g_stab == 1 && tickCount % 6 == 0) InvalidateRect(hwnd, nullptr, FALSE);  // 受け取り済みの台数
+                if (g_stab == 1 && tickCount % 6 == 0) {  // 受け取り済みの台数：変わったときだけ、その行だけを描き直す
+                    static std::wstring shownPush;
+                    std::wstring t = PushStatusText();
+                    if (t != shownPush) {
+                        shownPush = t;
+                        HWND src = GetDlgItem(hwnd, IDS_SOURCES);
+                        RECT lr, rc;
+                        GetWindowRect(src, &lr);
+                        MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&lr), 2);
+                        GetClientRect(hwnd, &rc);
+                        RECT line{0, lr.bottom, rc.right, lr.bottom + MulDiv(70, Dpi(hwnd), 96)};
+                        InvalidateRect(hwnd, &line, FALSE);
+                    }
+                }
             }
             return 0;
         case WM_DRAWITEM: {
@@ -2568,7 +2874,7 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (nh->idFrom == IDS_PCS && nh->code == NM_CUSTOMDRAW) return PcsCustomDraw(reinterpret_cast<NMLVCUSTOMDRAW*>(lp));
             if (nh->idFrom == IDS_PCS && nh->code == LVN_ITEMCHANGED) {
                 const NMLISTVIEW* nv = reinterpret_cast<const NMLISTVIEW*>(lp);
-                if ((nv->uChanged & LVIF_STATE) && ((nv->uNewState ^ nv->uOldState) & LVIS_SELECTED)) RefreshPcs(hwnd);
+                if ((nv->uChanged & LVIF_STATE) && ((nv->uNewState ^ nv->uOldState) & LVIS_SELECTED)) RefreshPcs(hwnd, true);
             }
             break;
         }
@@ -2647,6 +2953,15 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 case IDS_PUSH:
                     StartPush(hwnd);
+                    return 0;
+                case IDS_MAN_TEST:
+                    ManualTest(hwnd);
+                    return 0;
+                case IDS_MAN_ADD:
+                    ManualAdd(hwnd);
+                    return 0;
+                case IDS_MAN_REMOVE:
+                    ManualRemove(hwnd);
                     return 0;
             }
             break;
@@ -3693,9 +4008,9 @@ void OpenServerWindow(HWND owner) {
     int d = Dpi(owner);
     RECT orc;
     GetWindowRect(owner, &orc);
-    int w = MulDiv(820, d, 96), h = MulDiv(640, d, 96);
+    int w = MulDiv(1100, d, 96), h = MulDiv(700, d, 96);  // 教室の PC の一覧（8 列）とプリンターの入力欄が収まる大きさ
     g_server = CreateWindowExW(WS_EX_ACCEPTFILES, L"ManabitoShareServer", L"まなびと講習準備 ― 先生用",
-                               WS_OVERLAPPEDWINDOW, orc.left + MulDiv(40, d, 96), orc.top + MulDiv(40, d, 96), w, h, owner, nullptr, g_inst,
+                               WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, orc.left + MulDiv(40, d, 96), orc.top + MulDiv(40, d, 96), w, h, owner, nullptr, g_inst,
                                nullptr);
     ShowWindow(g_server, SW_SHOW);
     LayoutServer(g_server);

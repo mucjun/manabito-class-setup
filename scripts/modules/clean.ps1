@@ -44,15 +44,32 @@ function Test-ProcessRunning {
 }
 
 # 消す。消せなかった数を返す。
+# 消す。エクスプローラーのプレビューや Defender の検査がファイルをつかんでいると、Windows は「消す予約」だけを入れ、
+# 少しあとに消す。そのときフォルダーごと消すと「空ではない」とエラーになるが、実際には少しあとに消える（v0.19.0 の実機で起きた）。
+# そこで、エラーのときは少し待ってやり直し（3 回まで）、最後に本当に残っているかを確かめてから「消せなかった」と数える。
 function Remove-Items {
     param($Items)
     $failed = 0
     foreach ($it in @($Items)) {
-        try {
-            Remove-Item -LiteralPath $it.FullName -Recurse -Force -ErrorAction Stop
-        } catch {
+        $lastError = ''
+        for ($try = 1; $try -le 3; $try++) {
+            try {
+                if (Test-Path -LiteralPath $it.FullName) { Remove-Item -LiteralPath $it.FullName -Recurse -Force -ErrorAction Stop }
+                $lastError = ''
+                break
+            } catch {
+                $lastError = $_.Exception.Message
+                Start-Sleep -Milliseconds (500 * $try)
+            }
+        }
+        if ($lastError -and (Test-Path -LiteralPath $it.FullName)) {
+            Start-Sleep -Seconds 2   # 「消す予約」が終わるのを待ってから、最後に確かめる
+        }
+        if (Test-Path -LiteralPath $it.FullName) {
             $failed++
-            Add-Detail ('消せなかったもの: ' + $it.FullName + ' … ' + $_.Exception.Message)
+            Add-Detail ('消せなかったもの: ' + $it.FullName + ' … ' + $lastError)
+        } elseif ($lastError) {
+            Add-Detail ('少し待ってから消えたもの: ' + $it.FullName)
         }
     }
     return $failed

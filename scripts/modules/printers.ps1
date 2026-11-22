@@ -2,7 +2,7 @@
 #
 # 設定のファイル：%LOCALAPPDATA%\ManabitoClassSetup\printers.txt
 #   画面のアプリ（src\share.cpp）が、先生の PC の署名を、登録した鍵で確かめてから書く。確かめられないものは書かない。
-#   1 行目 v|版、2 行目から p|名前|ホスト|方式（raw・ipp）|ポート番号|ドライバー|既定（1/0）
+#   1 行目 v|版、2 行目から p|名前|ホスト|方式（raw・ipp）|ポート番号|ドライバー|既定（1/0）|IPP のパス（v0.19.2〜。無ければ /ipp/print）
 # ドライバーは、この PC にもうあるもの（Windows に入っているものを含む）だけを使う。ファイルは受け取らない。
 # 設定に無いプリンターは消さない（教室で足したものを壊さないため）。
 
@@ -22,7 +22,11 @@ function Read-PrinterConfig {
         $f = $l.Split('|')
         if ($f[0] -eq 'v' -and $f.Count -ge 2) { $ver = $f[1]; continue }
         if ($f[0] -ne 'p' -or $f.Count -lt 7) { $bad++; continue }
-        $it = [pscustomobject]@{ Name = $f[1]; Host = $f[2]; Proto = $f[3]; Port = 0; Driver = $f[5]; Default = ($f[6] -eq '1') }
+        $it = [pscustomobject]@{ Name = $f[1]; Host = $f[2]; Proto = $f[3]; Port = 0; Driver = $f[5]; Default = ($f[6] -eq '1'); Path = '/ipp/print' }
+        if ($f.Count -ge 8 -and $f[7]) {
+            if ($f[7] -notmatch '^/[A-Za-z0-9/_.\-]{0,99}$') { $bad++; continue }
+            $it.Path = $f[7]
+        }
         $port = 0
         if (-not [int]::TryParse($f[4], [ref]$port) -or $port -lt 1 -or $port -gt 65535) { $bad++; continue }
         $it.Port = $port
@@ -83,7 +87,7 @@ function Set-Printers {
             }
             $existing = Get-Printer -Name $it.Name -ErrorAction SilentlyContinue
             if ($it.Proto -eq 'ipp') {
-                $url = 'http://{0}:{1}/ipp/print' -f $it.Host, $it.Port
+                $url = 'http://{0}:{1}{2}' -f $it.Host, $it.Port, $it.Path
                 if ($existing) { $same += $it.Name; continue }   # IPP は作り直さない（既にあれば、そのまま）
                 Add-Printer -Name $it.Name -IppURL $url -ErrorAction Stop
                 $done += $it.Name

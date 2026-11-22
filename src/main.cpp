@@ -39,7 +39,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.19.0";
+const wchar_t kVersion[] = L"0.19.3";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -214,6 +214,9 @@ struct App {
     } pendingSelf;  // 独自アプリを入れ終えたあとで、このアプリ自身を更新する
     // 先生用への報告
     bool reporting = false, pairAsked = false;
+    // 起動直後は、更新の判断が済むまで先生からの案内などを後回しにする（更新の案内を先に出すため。v0.19.0 の実機で順番が逆だった）
+    bool updateDecided = false;
+    DWORD startTick = 0;
     DWORD remoteInspectTick = 0;  // 先生用から頼まれて点検した時刻（5 分に 1 回まで）
     // 自動で配られたファイル
     bool pushing = false;
@@ -1115,6 +1118,9 @@ void FinishClean(JobResult* res) {
 
 void SendReportNow();  // 先生用への報告（後で定義）
 
+// 更新の判断が済んだか（起動から 60 秒たったら、判断を待たない：確認がいつまでも終わらないときに、案内が出なくならないように）
+bool StartupSettled() { return g.updateDecided || (g.startTick != 0 && GetTickCount() - g.startTick > 60000); }
+
 void FinishInspection(JobResult* res) {
     SetBusy(false);
     if (!res->started) {
@@ -1328,14 +1334,14 @@ void FinishReport(ReportJob* job) {
         SetSummaryText(L"プリンターの設定：" + job->message, kNg);
     }
     delete job;
-    if (!pushId.empty()) StartPushFetch(t, pushId);
+    if (!pushId.empty() && StartupSettled() && !g.updating) StartPushFetch(t, pushId);  // 更新の判断の前は受け取らない（次の報告でまた知らされる）
     // 先生用から頼まれた点検：5 分に 1 回まで（偽の「先生用」に繰り返し頼まれても重くならないように）
     if (inspect && !g.running && (g.remoteInspectTick == 0 || GetTickCount() - g.remoteInspectTick > 300000)) {
         g.remoteInspectTick = GetTickCount();
         StartInspection();
     }
     // プリンターの設定が配られているのに、この先生の PC を登録していない：1 回だけ案内する（作業中・ほかの窓を開いているときは出さない）
-    if (needPair && !g.pairAsked && !g.running && IsWindowEnabled(g.hwnd)) {
+    if (needPair && !g.pairAsked && !g.running && !g.updating && StartupSettled() && IsWindowEnabled(g.hwnd)) {
         g.pairAsked = true;
         std::wstring ask = L"先生の PC（" + t.name +
                            L"）が、プリンターの設定を配っています。\n\n受け取るには、この PC に先生の PC を登録します（1 回だけ。先生の画面の印を確かめ、合言葉を入れます）。\n\n今、登録しますか？";
@@ -2440,6 +2446,7 @@ void OnUpdateTimer() {
 
 void FinishUpdateCheck(JobResult* res) {
     (void)res;
+    g.updateDecided = true;  // 新しい版なし・確かめられない・更新する・しない、のどれでも判断は済む（更新の案内の間は、窓が無効なので先生の案内は出ない）
     std::string bytes;
     if (g.updCheckOut.empty() || !ReadAllBytes(g.updCheckOut, bytes)) return;
     std::wstring t = DecodeText(bytes);
@@ -3633,6 +3640,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_APP_STARTUP:
+            g.startTick = GetTickCount();
             SetTimer(hwnd, kTimerReport, 30000, nullptr);  // 先生用への報告（先生用が見つかったときだけ送る）
             ShowUpdateResult();
             CheckSacOnStartup();
@@ -3642,11 +3650,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 StartUpdateCheck();
                 StartWuCheck();  // Windows Update に、まだ入っていない更新があるか（裏で 1〜数分）
             }
+            if (g.updCheckOut.empty()) g.updateDecided = true;  // 更新の確認をしなかった（Program Files 以外・インターネットなし など）
             return 0;
         case WM_APP_SHARE_FOUND: {
             share::Offer* offer = reinterpret_cast<share::Offer*>(lp);
-            if (g.running || g.updating || share::IsServerRunning() || !IsWindowEnabled(hwnd)) {
-                share::Release(offer->session);  // 作業中などは、あとでもう一度知らせる
+            if (g.running || g.updating || !StartupSettled() || share::IsServerRunning() || !IsWindowEnabled(hwnd)) {
+                share::Release(offer->session);  // 作業中・更新の判断の前などは、あとでもう一度知らせる
                 delete offer;
             } else {
                 share::HandleOffer(hwnd, offer);
