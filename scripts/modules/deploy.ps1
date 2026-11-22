@@ -290,6 +290,9 @@ function Start-ProcessWithProgress {
     $script:ProcessStalled = $false
     $script:ProcessEndedEarly = $false
     $style = 'Hidden'; if ($Visible) { $style = 'Normal' }
+    # 作業フォルダーが無いと起動できない（Office を入れていない PC では、まだ作られていないことがある。v0.19.0 の実機で起きた）
+    if (-not $WorkDir) { $WorkDir = $env:TEMP }
+    if (-not (Test-Path -LiteralPath $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
     # 起動できなかったら、ここで止める（$p が空のまま待つと、終わりを夜通し待ち続けてしまう）
     $p = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkDir -PassThru -WindowStyle $style -ErrorAction Stop
     if ($null -eq $p) { throw ($Label + '：起動できませんでした。') }
