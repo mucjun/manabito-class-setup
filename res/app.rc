@@ -5,8 +5,8 @@
 101 ICON "app.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,20,5,0
- PRODUCTVERSION 0,20,5,0
+ FILEVERSION 0,20,6,0
+ PRODUCTVERSION 0,20,6,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -19,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "まなびとステーション"
             VALUE "FileDescription", "まなびと講習準備"
-            VALUE "FileVersion", "0.20.5"
+            VALUE "FileVersion", "0.20.6"
             VALUE "InternalName", "ManabitoClassSetup"
             VALUE "LegalCopyright", "© 2026 まなびとステーション"
             VALUE "OriginalFilename", "ManabitoClassSetup.exe"
             VALUE "ProductName", "まなびと講習準備"
-            VALUE "ProductVersion", "0.20.5"
+            VALUE "ProductVersion", "0.20.6"
         END
     END
     BLOCK "VarFileInfo"

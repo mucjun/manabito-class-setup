@@ -12,6 +12,7 @@ cl /nologo /std:c++20 /EHsc /O2 /MT /utf-8 /W4 /DUNICODE /D_UNICODE /DNOMINMAX /
 
 robocopy scripts build\Release\scripts /MIR /NJH /NJS /NFL /NDL >nul
 robocopy profiles build\Release\profiles /MIR /NJH /NJS /NFL /NDL >nul
+copy /y extras\*.cmd build\Release\ >nul
 
 echo.
 echo OK: build\Release\ManabitoClassSetup.exe
