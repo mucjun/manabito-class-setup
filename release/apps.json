@@ -2,9 +2,9 @@
   "apps": [
     {
       "name": "まなびと講習準備",
-      "version": "0.20.1",
-      "url": "https://github.com/mucjun/manabito-class-setup/releases/download/v0.20.1/ManabitoClassSetup_v0.20.1.zip",
-      "sha256": "581CC027C55DF14F8C5D660BE8CA9BF12E340E822EFEAAF7AF183C7EDF797305",
+      "version": "0.20.4",
+      "url": "https://github.com/mucjun/manabito-class-setup/releases/download/v0.20.4/ManabitoClassSetup_v0.20.4.zip",
+      "sha256": "95F6DF8780441D5A0355F2A80B213D9079E672D9C3918EC017E9FAB0A0F8A6F2",
       "folder": "ManabitoClassSetup",
       "exe": "ManabitoClassSetup.exe"
     }
