@@ -310,6 +310,7 @@ function Invoke-ApplyAll {
         @('Set-WindowsAds',      'Windows の広告・おすすめ・ヒント'),
         @('Set-Copilot',         'Copilot'),
         @('Set-EdgeFirstRun',    'Edge の最初の設定の画面'),
+        @('Set-LockScreenPhoto', 'ロック画面・サインイン画面の写真'),
         @('Set-Notifications',   '通知（右下のお知らせ）'),
         @('Set-OneDriveStartup', 'OneDrive の自動起動'),
         @('Set-VolumeMute',      '音量'),

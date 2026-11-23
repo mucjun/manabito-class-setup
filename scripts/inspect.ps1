@@ -52,6 +52,7 @@ $checks = @(
     @('見た目と通知',       'Test-WindowsAds',     'Windows の広告・おすすめ・ヒント'),
     @('見た目と通知',       'Test-Copilot',        'Copilot'),
     @('見た目と通知',       'Test-EdgeFirstRun',   'Edge の最初の設定の画面'),
+    @('見た目と通知',       'Test-LockScreenPhoto', 'ロック画面・サインイン画面の写真'),
     @('見た目と通知',       'Test-Notifications',  '通知（右下のお知らせ）'),
     @('見た目と通知',       'Test-OneDriveStartup','OneDrive の自動起動'),
     @('音',                 'Test-Volume',         '音量'),

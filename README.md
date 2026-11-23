@@ -1,4 +1,4 @@
-# まなびと講習準備（v0.19.5）
+# まなびと講習準備（v0.19.6）
 
 講習で使う Windows 11 の PC を点検し、講習用の設定にそろえるアプリです。
 
@@ -189,6 +189,20 @@ Program Files 以外（ダウンロードなど）から起動すると、`C:\Pr
 - **開発用の PC では［履歴を消す］を実行しない**（git などのログインも消える）。
 - 講習の間で PC を完全に基準の状態へ戻すには、まなびとバックアップでの復元が確実。
 
+## 新しい版を GitHub に出す（tools\release.ps1、v0.19.6〜）
+
+使うアプリ：コマンドプロンプト
+
+```
+cd /d C:\dev\ManabitoClassSetup
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Zip "%USERPROFILE%\Downloads\ManabitoClassSetup_v0.19.6.zip"
+```
+
+順に、GitHub の変更を取り込む → zip を展開して上書きでコピー（.git と release\apps.json には触れない）→ 目録を GitHub のものに戻す →
+版の数字を src\main.cpp から読む（GitHub に同じ版の印があれば止める）→ コミットして送る（断られたら取り込み直して送り直す）→ 印を付けて送る。
+途中で問題があれば、そこで理由を出して止まる。印は、main に送れたあとでだけ付ける。コミットの説明は docs\CHANGES_v<版>.md の見出し（-Message で変えられる）。
+-Zip を省くと、手でコピーしたものをそのまま出す。
+
 ## 講座のプロファイルと、この講座で入れるアプリ（v0.19.0）
 
 - プロファイルは 3 つ：**基準**（standard.json。Office を入れる）、**事務系**（jimu.json。Office・Adobe Acrobat Reader・Paint.NET、PDF は Acrobat）、
@@ -282,6 +296,10 @@ Program Files 以外（ダウンロードなど）から起動すると、`C:\Pr
 
 - ［設定をそろえる］に「Edge の最初の設定の画面」「Windows の広告・おすすめ・ヒント（11 か所）」「Copilot」を追加（scripts\modules\quiet.ps1。
   プロファイル edgeFirstRun・windowsAds・copilot、標準 hide）。書けない値は失敗にせず、手で変える方法を案内する。
+- ［設定をそろえる］に「ロック画面・サインイン画面の写真」（v0.19.6。プロファイル lockScreenPhoto、標準 hide）：
+  サインイン画面を単色に（DisableLogonBackgroundImage）、ロック画面を出さない（NoLockScreen。Pro では効かないことがある）、
+  ロック画面のスポットライトを止める（RotatingLockScreenEnabled=0）、デスクトップの「この写真について」を隠し、デスクトップのスポットライトを止める。
+  ロック画面が出る場合も、写真は毎日替わらず Windows の標準の 1 枚になる。再起動のあとに効く。
 - 点検に「この PC の健康」：空き容量（healthDiskMinGB、標準 10 GB）・時刻のずれ（time.windows.com、healthClockMaxSec、標準 120 秒）・
   電池の劣化（powercfg の電池のレポート、healthBatteryMinPct、標準 60%）。先生用の［教室の PC］にも出る。
 

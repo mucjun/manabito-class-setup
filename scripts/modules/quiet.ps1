@@ -30,6 +30,17 @@ $script:QuietSets = @{
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'Start_AccountNotifications', 0)            # スタートのアカウントのお知らせ
         )
     }
+    'lockscreen' = @{
+        Name = 'ロック画面・サインイン画面の写真'; Pref = 'lockScreenPhoto'
+        Manual = '設定 →「個人用設定」→「ロック画面」で、背景を「画像」にし、「サインイン画面にロック画面の背景画像を表示する」をオフにしてください。デスクトップの「この写真について」は、デスクトップの背景を「単色」にすると消えます。'
+        Values = @(
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'DisableLogonBackgroundImage', 1),          # サインイン画面は単色（写真を出さない）
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization', 'NoLockScreen', 1),              # ロック画面を出さない（Pro では効かないことがある）
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'RotatingLockScreenEnabled', 0),  # ロック画面のスポットライト（毎日替わる写真）を止める
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel', '{2cc5ca98-6485-489a-920e-b3e88a6ccce3}', 1),  # デスクトップの「この写真について」を隠す
+            @('HKCU:\Software\Policies\Microsoft\Windows\CloudContent', 'DisableSpotlightCollectionOnDesktop', 1)   # デスクトップのスポットライトを止める
+        )
+    }
     'copilot' = @{
         Name = 'Copilot'; Pref = 'copilot'
         Manual = 'タスクバーを右クリック →「タスクバーの設定」で Copilot をオフにしてください。'
@@ -89,6 +100,8 @@ function Set-QuietItem {
 function Test-EdgeFirstRun { param($Prof) Test-QuietItem $Prof 'edgefirstrun' }
 function Test-WindowsAds   { param($Prof) Test-QuietItem $Prof 'windowsads' }
 function Test-Copilot      { param($Prof) Test-QuietItem $Prof 'copilot' }
+function Test-LockScreenPhoto { param($Prof) Test-QuietItem $Prof 'lockscreen' }
+function Set-LockScreenPhoto  { param($Prof) Set-QuietItem $Prof 'lockscreen' }
 function Set-EdgeFirstRun  { param($Prof) Set-QuietItem $Prof 'edgefirstrun' }
 function Set-WindowsAds    { param($Prof) Set-QuietItem $Prof 'windowsads' }
 function Set-Copilot       { param($Prof) Set-QuietItem $Prof 'copilot' }

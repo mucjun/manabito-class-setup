@@ -9,6 +9,7 @@
   "edgeFirstRun": "hide",
   "windowsAds": "hide",
   "copilot": "hide",
+  "lockScreenPhoto": "hide",
   "healthDiskMinGB": 10,
   "healthClockMaxSec": 120,
   "healthBatteryMinPct": 60,
