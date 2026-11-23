@@ -50,10 +50,15 @@ $script:QuietSets = @{
         )
     }
     'startapps' = @{
-        Name = 'スタートの「最近追加したアプリ」「よく使うアプリ」'; Pref = 'startAppsList'
-        Manual = '設定 →「個人用設定」→「スタート」で、「最近追加したアプリを表示する」「よく使うアプリを表示する」をオフにしてください。'
+        Name = 'スタートの「最近使用」（最近追加したアプリ・よく使うアプリ）'; Pref = 'startAppsList'
+        Manual = '設定 →「個人用設定」→「スタート」で、「最近使用」（または「最近追加したアプリを表示する」「よく使うアプリを表示する」）をオフにしてください。'
+        Restart = '再起動のあとに効きます（Microsoft の資料による）。スタートメニューは読み込み直しました。'
         Values = @(
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer', 'HideRecentlyAddedApps', 1),          # 最近追加したアプリを出さない（このアプリ・まなびとバックアップも出ない）
+            @('HKCU:\Software\Policies\Microsoft\Windows\Explorer', 'HideRecentlyAddedApps', 1),          # 同じ設定を利用者ごとにも（PC 全体だけでは「おすすめ」に残ることがある。v0.20.2）
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Start', 'ShowRecentList', 0),             # 新しいスタート（「おすすめ」が「最近使用」になった版）の「最近追加したアプリ」。v0.20.4
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer', 'HideRecommendedSection', 1),         # 「最近使用」（旧「おすすめ」）の欄そのものを出さない。v0.20.4
+            @('HKCU:\Software\Policies\Microsoft\Windows\Explorer', 'HideRecommendedSection', 1),
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'Start_TrackProgs', 0)   # よく使うアプリを出さない
         )
     }
@@ -107,10 +112,16 @@ function Set-QuietItem {
         try { Set-RegDword $v[0] $v[1] ([int]$v[2]) } catch { $failed++; Write-Host ('（書けませんでした：' + $v[0] + '\' + $v[1] + '：' + $_.Exception.Message + '）') }
     }
     $script:NeedExplorerRestart = $true
+    if ($Key -eq 'startapps') {
+        # スタートメニューを読み込み直す（再起動しなくても、なるべくその場で効くように）
+        Get-Process -Name StartMenuExperienceHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
     if ($failed -gt 0) {
         return New-Row $id $set.Name 'SKIP' $before.Current $before.Expected ('{0} か所は、この版の Windows ではアプリから変えられませんでした。{1}' -f $failed, $set.Manual)
     }
-    return New-Row $id $set.Name 'DONE' $before.Current $before.Expected ''
+    $done = ''
+    if ($set.ContainsKey('Restart')) { $done = $set.Restart }
+    return New-Row $id $set.Name 'DONE' $before.Current $before.Expected $done
 }
 
 function Test-EdgeFirstRun { param($Prof) Test-QuietItem $Prof 'edgefirstrun' }
@@ -125,3 +136,39 @@ function Set-LockScreenPhoto  { param($Prof) Set-QuietItem $Prof 'lockscreen' }
 function Set-EdgeFirstRun  { param($Prof) Set-QuietItem $Prof 'edgefirstrun' }
 function Set-WindowsAds    { param($Prof) Set-QuietItem $Prof 'windowsads' }
 function Set-Copilot       { param($Prof) Set-QuietItem $Prof 'copilot' }
+
+# ---- スタートの「すべて」のビュー（v0.20.3）
+# HKCU\Software\Microsoft\Windows\CurrentVersion\Start の AllAppsViewMode：0 = カテゴリ（初めの値）、1 = グリッド、2 = 一覧
+# スタートメニューの部品（StartMenuExperienceHost）は、自分の覚えている値で上書きすることがあるため、止めてから書く（次にスタートを開くと読み直す）
+$script:StartViewNames = @{ 0 = 'カテゴリ'; 1 = 'グリッド'; 2 = '一覧' }
+$script:StartViewWant = @{ 'category' = 0; 'grid' = 1; 'list' = 2 }
+
+function Test-StartAllAppsView {
+    param($Prof)
+    $name = 'スタートの「すべて」のビュー'
+    $want = [string](Get-Pref $Prof 'startAllAppsView' 'category')
+    $v = Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Start' 'AllAppsViewMode'
+    $cur = 'カテゴリ（初めの値）'
+    if ($null -ne $v) { $cur = $script:StartViewNames[[int]$v]; if (-not $cur) { $cur = ('設定 ' + $v) } }
+    if (-not $script:StartViewWant.ContainsKey($want)) { return New-Row 'startview' $name 'NA' $cur '変えない' '' }
+    $w = $script:StartViewWant[$want]
+    $state = 'NG'; if (($null -eq $v -and $w -eq 0) -or ($null -ne $v -and [int]$v -eq $w)) { $state = 'OK' }
+    return New-Row 'startview' $name $state $cur $script:StartViewNames[$w] ''
+}
+
+function Set-StartAllAppsView {
+    param($Prof)
+    $name = 'スタートの「すべて」のビュー'
+    $want = [string](Get-Pref $Prof 'startAllAppsView' 'category')
+    if (-not $script:StartViewWant.ContainsKey($want)) { return New-Row 'startview' $name 'SKIP' '' '変えない' '' }
+    $before = Test-StartAllAppsView $Prof
+    if ($before.State -eq 'OK') { return New-Row 'startview' $name 'SAME' $before.Current $before.Expected '' }
+    try {
+        Get-Process -Name StartMenuExperienceHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 800
+        Set-RegDword 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Start' 'AllAppsViewMode' ([int]$script:StartViewWant[$want])
+    } catch {
+        return New-Row 'startview' $name 'SKIP' $before.Current $before.Expected ('変えられませんでした（' + $_.Exception.Message + '）。スタートの「すべて」の右の「ビュー」から選んでください。')
+    }
+    return New-Row 'startview' $name 'DONE' $before.Current $before.Expected '次にスタートを開いたときから変わります。'
+}

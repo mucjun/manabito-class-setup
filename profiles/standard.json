@@ -12,6 +12,7 @@
   "lockScreenPhoto": "hide",
   "quickAccessHistory": "hide",
   "startAppsList": "hide",
+  "startAllAppsView": "category",
   "healthDiskMinGB": 10,
   "healthClockMaxSec": 120,
   "healthBatteryMinPct": 60,

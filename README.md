@@ -1,4 +1,4 @@
-# まなびと講習準備（v0.20.1）
+# まなびと講習準備（v0.20.4）
 
 講習で使う Windows 11 の PC を点検し、講習用の設定にそろえるアプリです。
 
@@ -321,7 +321,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Zip "%USE
   （初めの 6 つに戻る）。ピン留めの印を読めない Windows では何もしない。［設定をそろえる］で「よく使うフォルダー」「最近使ったファイル」の表示をオフ
   （プロファイル quickAccessHistory、標準 hide）。
 - ［設定をそろえる］「スタートの『最近追加したアプリ』『よく使うアプリ』」（v0.20.1。プロファイル startAppsList、標準 hide）：
-  HideRecentlyAddedApps（ポリシー）と Start_TrackProgs=0。このアプリやまなびとバックアップが、受講生の目に入りやすい場所に出ない（「すべて」の「まなびとツール」には置く）。
+  HideRecentlyAddedApps（ポリシー。PC 全体と利用者ごとの両方。再起動のあとに効く）と Start_TrackProgs=0。v0.20.4 から、新しいスタート（「おすすめ」が「最近使用」になった版）向けに、ShowRecentList=0 と HideRecommendedSection（「最近使用」の欄そのものを出さない。PC 全体と利用者ごと）も。書いたあとスタートメニューを読み込み直す。このアプリやまなびとバックアップが、受講生の目に入りやすい場所に出ない（「すべて」の「まなびとツール」には置く）。
+- ［設定をそろえる］「スタートの『すべて』のビュー」（v0.20.3。プロファイル startAllAppsView：category・grid・list・それ以外は変えない。標準 category）：
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Start の AllAppsViewMode（0 カテゴリ・1 グリッド・2 一覧）。スタートメニューの部品が上書きするので、止めてから書く。
 - 点検に「この PC の健康」：空き容量（healthDiskMinGB、標準 10 GB）・時刻のずれ（time.windows.com、healthClockMaxSec、標準 120 秒）・
   電池の劣化（powercfg の電池のレポート、healthBatteryMinPct、標準 60%）。先生用の［教室の PC］にも出る。
 
