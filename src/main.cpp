@@ -35,11 +35,17 @@ using std::max;
 using std::min;
 }  // namespace Gdiplus
 #include <gdiplus.h>
+#include <tlhelp32.h>
+#include <bluetoothapis.h>
+#include <set>
+#ifdef _MSC_VER
+#pragma comment(lib, "Bthprops.lib")  // Bluetooth（先生の PC の片付け）
+#endif
 
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.19.7";
+const wchar_t kVersion[] = L"0.20.0";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -214,6 +220,7 @@ struct App {
     } pendingSelf;  // 独自アプリを入れ終えたあとで、このアプリ自身を更新する
     // 先生用への報告
     bool reporting = false, pairAsked = false;
+    bool teacherCleanup = false;  // 先生の PC の講習後の片付けの最中（v0.20.0）
     // 起動直後は、更新の判断が済むまで先生からの案内などを後回しにする（更新の案内を先に出すため。v0.19.0 の実機で順番が逆だった）
     bool updateDecided = false;
     DWORD startTick = 0;
@@ -1084,7 +1091,197 @@ void StartClean(bool atExit = false) {
                    kAccent);
 }
 
+
+// ---------------------------------------------------------------- 先生の PC の講習後の片付け（v0.20.0）
+
+std::string Utf8Of(const std::wstring& w);  // 後で定義
+
+// 開いていると作業を失うおそれのあるアプリ（閉じるときに、それぞれが「保存しますか」と聞く）
+std::wstring OpenWorkApps() {
+    static const struct {
+        const wchar_t* exe;
+        const wchar_t* name;
+    } kApps[] = {{L"WINWORD.EXE", L"Word"}, {L"EXCEL.EXE", L"Excel"}, {L"POWERPNT.EXE", L"PowerPoint"}, {L"OUTLOOK.EXE", L"Outlook"},
+                 {L"PaintDotNet.exe", L"Paint.NET"}};
+    std::wstring found;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return found;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    std::set<std::wstring> names;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            for (const auto& a : kApps)
+                if (_wcsicmp(pe.szExeFile, a.exe) == 0) names.insert(a.name);
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    for (const auto& n : names) found += (found.empty() ? L"" : L"・") + n;
+    return found;
+}
+
+std::wstring BtAddr(const BLUETOOTH_ADDRESS& a) {
+    wchar_t b[32];
+    swprintf(b, 32, L"%012llX", static_cast<unsigned long long>(a.ullLong));
+    return b;
+}
+
+// Bluetooth：教室の基準に無い機器のペアリングを外す（初回は基準を覚えるだけ）。戻り値は結果の文
+std::wstring RemoveForeignBluetooth() {
+    BLUETOOTH_DEVICE_SEARCH_PARAMS sp{};
+    sp.dwSize = sizeof(sp);
+    sp.fReturnAuthenticated = TRUE;
+    sp.fReturnRemembered = TRUE;
+    sp.fReturnConnected = TRUE;
+    sp.fReturnUnknown = FALSE;
+    sp.fIssueInquiry = FALSE;
+    sp.cTimeoutMultiplier = 0;
+    sp.hRadio = nullptr;
+    BLUETOOTH_DEVICE_INFO di{};
+    di.dwSize = sizeof(di);
+    std::vector<std::pair<std::wstring, BLUETOOTH_DEVICE_INFO>> devs;
+    HBLUETOOTH_DEVICE_FIND f = BluetoothFindFirstDevice(&sp, &di);
+    if (f) {
+        do {
+            devs.push_back({BtAddr(di.Address), di});
+            di = BLUETOOTH_DEVICE_INFO{};
+            di.dwSize = sizeof(di);
+        } while (BluetoothFindNextDevice(f, &di));
+        BluetoothFindDeviceClose(f);
+    }
+    const std::wstring base = AppDataDir() + L"\\teacher_baseline_bt.txt";
+    std::string bytes;
+    if (!ReadAllBytes(base, bytes)) {
+        // 初回：今の機器を基準として覚える（何も外さない）
+        std::string text;
+        std::wstring names;
+        for (const auto& d : devs) {
+            text += Utf8Of(d.first) + "\r\n";
+            names += (names.empty() ? L"" : L"・") + std::wstring(d.second.szName);
+        }
+        SHCreateDirectoryExW(nullptr, AppDataDir().c_str(), nullptr);
+        HANDLE h = CreateFileW(base.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD w = 0;
+            WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &w, nullptr);
+            CloseHandle(h);
+        }
+        return L"初めての片付けなので、今の Bluetooth 機器（" + (names.empty() ? std::wstring(L"なし") : names) + L"）を教室の基準として覚えました。";
+    }
+    std::wstring removed, failed;
+    for (const auto& d : devs) {
+        if (bytes.find(Utf8Of(d.first)) != std::string::npos) continue;  // 基準にある
+        BLUETOOTH_ADDRESS addr = d.second.Address;
+        if (BluetoothRemoveDevice(&addr) == ERROR_SUCCESS) removed += (removed.empty() ? L"" : L"・") + std::wstring(d.second.szName);
+        else failed += (failed.empty() ? L"" : L"・") + std::wstring(d.second.szName);
+    }
+    std::wstring r = removed.empty() ? L"外した Bluetooth 機器はありません。" : L"Bluetooth 機器のペアリングを外しました：" + removed + L"。";
+    if (!failed.empty()) r += L"外せなかったもの：" + failed + L"（設定 →「Bluetooth とデバイス」から外してください）。";
+    return r;
+}
+
+void StartTeacherCleanup() {
+    if (g.running) {
+        MessageBoxW(g.hwnd, L"作業の最中です。終わってから押してください。", kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    const std::wstring script = g.exeDir + L"\\scripts\\teacher_cleanup.ps1";
+    if (!FileExists(script)) {
+        MessageBoxW(g.hwnd, (L"片付けの部品が見つかりません。\n\n" + script).c_str(), kAppName, MB_OK | MB_ICONWARNING);
+        return;
+    }
+    // 保存していないファイルを失わないよう、作業のアプリが開いていたら止める
+    const std::wstring open = OpenWorkApps();
+    if (!open.empty()) {
+        MessageBoxW(g.hwnd,
+                    (L"次のアプリが開いています：" + open +
+                     L"\n\n保存していないファイルを失わないよう、閉じてから、もう一度［講習後の片付け］を押してください（閉じるときに「保存しますか」と聞かれたら、必要なら保存してください）。")
+                        .c_str(),
+                    kAppName, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    const std::wstring ask =
+        L"この PC（先生の PC）を、次の講習のために片付けます。\n\n"
+        L"1. ファイルを移す（消しません）：デスクトップ（ショートカット以外）・ダウンロード・ドキュメント・スクリーンショット・画面の録画を、"
+        L"「ドキュメント\\講習の保管\\日時」に移します。\n"
+        L"2. サインアウトと履歴：Microsoft アカウント・Office・Adobe・Edge と Chrome（初めの状態に戻します。お気に入りも消えます）・"
+        L"ほかのアプリのログイン、最近使ったファイル、日本語入力の学習とユーザー辞書、ごみ箱など。\n"
+        L"　※ 残すもの：この PC のサインイン（ローカル ユーザー）、NAS などネットワークの資格情報。\n"
+        L"　※ Office を講師のアカウントで使っていた場合は、次の講師がサインインし直します。\n"
+        L"3. 元に戻す：画面を「複製」に、音の出口を PC のスピーカーに、既定のプリンターを先生用で選んだものに。\n"
+        L"4. クリップボードの履歴、教室の基準に無い Wi-Fi の接続先と Bluetooth 機器（初めての片付けのときは、今のものを基準として覚えるだけです）。\n"
+        L"5. 先生用の窓の授業ファイルの欄・自動で配るものを空にします（プリンターの設定は残します）。\n\n"
+        L"サインアウトと履歴は元に戻せません。管理者の確認が出たら「はい」を押してください。\n\n片付けますか？";
+    if (MessageBoxW(g.hwnd, ask.c_str(), kAppName, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+
+    EnsureLogDir();
+    const std::wstring base = g.logDir + L"\\先生の片付け_" + Timestamp();
+    g.cleanTsv = base + L".tsv";
+    g.cleanLog = base + L"_PowerShell.txt";
+    std::wstring params = L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + L"\"";
+    const std::wstring profile = SelectedProfilePath();
+    if (!profile.empty()) params += L" -ProfilePath \"" + profile + L"\"";
+    params += L" -OutFile \"" + g.cleanTsv + L"\" -LogFile \"" + g.cleanLog + L"\"";
+    const std::wstring user = CurrentUserName();
+    if (!user.empty()) params += L" -ExpectedUser \"" + user + L"\"";
+    params += L" -ProtectPath \"" + g.exeDir + L"\"";
+    ApplyJob* job = new ApplyJob();
+    job->exe = PowerShellPath();
+    job->params = params;
+    job->hwnd = g.hwnd;
+    job->kind = kJobClean;
+    HANDLE th = CreateThread(nullptr, 0, ApplyThread, job, 0, nullptr);
+    if (!th) {
+        delete job;
+        MessageBoxW(g.hwnd, L"片付けを始められませんでした。", kAppName, MB_OK | MB_ICONERROR);
+        return;
+    }
+    CloseHandle(th);
+    g.applying = true;
+    g.teacherCleanup = true;
+    SetBusy(true);
+    SetSummaryText(L"先生の PC を片付けています…（管理者の確認が出たら「はい」を押してください）", kAccent);
+}
+
+// 片付けの部品が終わったあと：Bluetooth・先生用の窓の状態・まとめの知らせ
+void FinishTeacherCleanup(JobResult* res) {
+    g.teacherCleanup = false;
+    const bool ran = res->started && FileExists(g.cleanTsv);
+    static const ElevatedText t = {
+        L"片付けを取りやめました（管理者の確認で「いいえ」が押されました）。何も変えていません。",
+        L"片付けを始められませんでした（エラー %lu）。",
+        L"片付けた結果を受け取れませんでした。",
+        L"片付けました",
+        L"片付けた",
+        L"うまくいかなかったものがあります。",
+    };
+    FinishElevated(res, g.cleanTsv, g.cleanLog, t);
+    if (!ran) return;
+    const std::wstring bt = RemoveForeignBluetooth();
+    share::ResetTeacherWork();
+    std::vector<Row> rows;
+    std::wstring fails, moved;
+    if (LoadResults(g.cleanTsv, rows)) {
+        for (const auto& r : rows) {
+            if (r.state == L"FAIL") fails += L"・" + r.name + (r.detail.empty() ? std::wstring() : L"：" + r.detail) + L"\n";
+            if (r.id.rfind(L"archive-", 0) == 0 && r.state == L"DONE" && moved.empty()) moved = r.detail;
+        }
+    }
+    std::wstring msg = L"先生の PC を片付けました。\n\n";
+    if (!moved.empty()) msg += L"ファイルは「ドキュメント\\講習の保管」に移しました（" + moved + L"）。\n";
+    msg += bt + L"\n先生用の窓の授業ファイルの欄と、自動で配るものを空にしました。\n";
+    if (!fails.empty()) msg += L"\nうまくいかなかったもの：\n" + fails;
+    msg += L"\n記録：" + g.cleanLog;
+    MessageBoxW(g.hwnd, msg.c_str(), kAppName, MB_OK | (fails.empty() ? MB_ICONINFORMATION : MB_ICONWARNING));
+}
+
 void FinishClean(JobResult* res) {
+    if (g.teacherCleanup) {  // 先生の PC の講習後の片付け
+        g.applying = false;
+        SetBusy(false);
+        FinishTeacherCleanup(res);
+        return;
+    }
     if (g.closeAfterClean) {
         // 閉じるときの［履歴を消す］：点検はせず、消せなかったものがあれば知らせてから閉じる
         g.closeAfterClean = false;
@@ -3757,6 +3954,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case share::kTeacherCleanupMsg:
+            StartTeacherCleanup();
+            return 0;
         case WM_APP_REPORTDONE:
             FinishReport(reinterpret_cast<ReportJob*>(lp));
             return 0;

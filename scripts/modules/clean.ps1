@@ -424,7 +424,8 @@ function Clear-QuickAccessFrequent {
 # ---------------------------------------------------------------- まとめて（clean.ps1・oneclick.ps1 から使う）
 
 function Invoke-CleanAll {
-    param($Prof, [System.Collections.Generic.List[object]]$Rows)
+    # $Skip：飛ばす項目（関数の名前）。先生の片付けでは、移しきれなかったファイルを消さないよう、ダウンロード・デスクトップ・授業ファイルを飛ばす
+    param($Prof, [System.Collections.Generic.List[object]]$Rows, [string[]]$Skip = @())
     $steps = @(
         @('Clear-RecentFiles',    '最近使ったファイル'),
         @('Clear-QuickAccessFrequent', 'エクスプローラーのよく使うフォルダー'),
@@ -446,6 +447,7 @@ function Invoke-CleanAll {
     )
     foreach ($s in $steps) {
         $func = $s[0]; $label = $s[1]
+        if ($Skip -contains $func) { continue }
         try {
             $rs = @(& $func $Prof)
         } catch {

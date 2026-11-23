@@ -89,4 +89,10 @@ bool FetchPush(const TeacherInfo& t, const std::string& pushId, PushResult& resu
 // この先生の PC から受け取り終えた、自動で配られたものの番号（無ければ空）
 std::string LastPushId(const std::string& fingerprint);
 
+// ---- 先生の PC の講習後の片付け（v0.20.0）
+// 先生用の窓の［講習後の片付け］を押すと、本体の窓（Init の owner）にこの知らせを送る。本体が片付けを行う
+const UINT kTeacherCleanupMsg = WM_APP + 20;
+// 先生用の窓の状態を空にする（授業ファイルの欄・自動で配るもの・受け取った PC の一覧。プリンターの設定と先生の鍵は残す）。画面のスレッドから
+void ResetTeacherWork();
+
 }  // namespace share

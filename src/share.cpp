@@ -1346,6 +1346,8 @@ enum : int {
     IDS_MAN_TEST,    //   ［つながるか確かめる］
     IDS_MAN_ADD,     //   ［一覧に加える］
     IDS_MAN_REMOVE,  //   ［選んだものを外す］
+    IDS_TCLEAN,      // ［講習後の片付け（この PC）］（v0.20.0）
+    IDS_BASELINE,    // ［教室の基準を覚え直す］（Wi-Fi・Bluetooth）
 };
 const UINT_PTR kServerTimer = 11;
 HFONT g_sfont = nullptr, g_sbig = nullptr, g_sbold = nullptr;
@@ -2508,6 +2510,10 @@ void CreateServerTabControls(HWND hwnd) {
     }
     CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_PCDETAIL)), g_inst, nullptr);
+    CreateWindowExW(0, WC_BUTTONW, L"講習後の片付け（この PC）", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_TCLEAN)), g_inst, nullptr);
+    CreateWindowExW(0, WC_BUTTONW, L"教室の基準を覚え直す", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, hwnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_BASELINE)), g_inst, nullptr);
     CreateWindowExW(0, WC_BUTTONW, L"登録済みの PC に自動で配る", WS_CHILD | WS_TABSTOP, 0, 0, 10, 10, hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDS_PUSH)), g_inst, nullptr);
     CreateWindowExW(0, WC_BUTTONW, L"いますぐ点検してもらう", WS_CHILD | WS_TABSTOP, 0, 0, 10, 10, hwnd,
@@ -2587,6 +2593,8 @@ void LayoutServer(HWND hwnd) {
     g_sl.contentTop = ct;
     const int bottom = H - S(52);  // ［先生用をやめて閉じる］の上
     MoveWindow(GetDlgItem(hwnd, IDS_STOP), W - m - S(200), H - S(44), S(200), S(32), TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDS_TCLEAN), m, H - S(44), S(240), S(32), TRUE);    // 先生の PC の片付け（どのタブでも出す）
+    MoveWindow(GetDlgItem(hwnd, IDS_BASELINE), m + S(250), H - S(44), S(220), S(32), TRUE);
 
     // 教室の PC
     MoveWindow(GetDlgItem(hwnd, IDS_INSPECT), W - m - S(230), ct - S(2), S(230), S(32), TRUE);
@@ -2954,6 +2962,20 @@ LRESULT CALLBACK ServerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDS_PUSH:
                     StartPush(hwnd);
                     return 0;
+                case IDS_TCLEAN:
+                    PostMessageW(g_owner, kTeacherCleanupMsg, 0, 0);  // 片付けは本体の窓が行う（管理者として動かし、結果を一覧に出す仕組みがあるため）
+                    return 0;
+                case IDS_BASELINE: {
+                    if (MessageBoxW(hwnd,
+                                    L"教室の基準（Wi-Fi の接続先と Bluetooth の機器）を忘れます。\n\n次に［講習後の片付け］をしたときの状態を、新しい基準として覚えます"
+                                    L"（そのときは何も消しません）。教室の Wi-Fi を変えたときや、教室の Bluetooth 機器を入れ替えたときに使います。\n\n忘れますか？",
+                                    kAppName, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+                        return 0;
+                    DeleteFileW((AppDataDir() + L"\\teacher_baseline_wifi.txt").c_str());
+                    DeleteFileW((AppDataDir() + L"\\teacher_baseline_bt.txt").c_str());
+                    MessageBoxW(hwnd, L"教室の基準を忘れました。次の［講習後の片付け］で覚え直します。", kAppName, MB_OK | MB_ICONINFORMATION);
+                    return 0;
+                }
                 case IDS_MAN_TEST:
                     ManualTest(hwnd);
                     return 0;
@@ -3885,6 +3907,23 @@ bool FetchPush(const TeacherInfo& t, const std::string& pushId, PushResult& r, s
     }
     message = std::to_wstring(r.failed) + L" 個のファイルを受け取れませんでした（開いているファイルは置き換えられません）。";
     return false;
+}
+
+// 先生用の窓の状態を空にする：授業ファイルの欄・自動で配るもの・受け取った PC の一覧（プリンターの設定と先生の鍵は残す）
+void ResetTeacherWork() {
+    {
+        Lock l(&g_cs);
+        g_sources.clear();
+        RebuildEntries();
+        g_push = PushState();
+        g_clients.clear();
+    }
+    if (g_server && IsWindow(g_server)) {
+        RefreshSourceList(g_server);
+        SetDlgItemTextW(g_server, IDS_PUSH, L"登録済みの PC に自動で配る");
+        ListView_DeleteAllItems(GetDlgItem(g_server, IDS_CLIENTS));
+        InvalidateRect(g_server, nullptr, FALSE);
+    }
 }
 
 void Init(HINSTANCE inst, HWND owner, UINT foundMsg) {
