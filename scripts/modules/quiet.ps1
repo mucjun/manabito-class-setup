@@ -57,6 +57,7 @@ $script:QuietSets = @{
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer', 'HideRecentlyAddedApps', 1),          # 最近追加したアプリを出さない（このアプリ・まなびとバックアップも出ない）
             @('HKCU:\Software\Policies\Microsoft\Windows\Explorer', 'HideRecentlyAddedApps', 1),          # 同じ設定を利用者ごとにも（PC 全体だけでは「おすすめ」に残ることがある。v0.20.2）
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Start', 'ShowRecentList', 0),             # 新しいスタート（「おすすめ」が「最近使用」になった版）の「最近追加したアプリ」。v0.20.4
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Start', 'ShowRecentSection', 0),          # 設定の「新着順」（英語版 Recent）の欄のスイッチ。手でオフにすると消えることを実機で確認。v0.20.5
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer', 'HideRecommendedSection', 1),         # 「最近使用」（旧「おすすめ」）の欄そのものを出さない。v0.20.4
             @('HKCU:\Software\Policies\Microsoft\Windows\Explorer', 'HideRecommendedSection', 1),
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'Start_TrackProgs', 0)   # よく使うアプリを出さない
@@ -108,6 +109,11 @@ function Set-QuietItem {
     $before = Test-QuietItem $Prof $Key
     if ($before.State -eq 'OK') { return New-Row $id $set.Name 'SAME' $before.Current $before.Expected '' }
     $failed = 0
+    if ($Key -eq 'startapps') {
+        # スタートメニューの部品は、自分の覚えている値で上書きすることがあるため、止めてから書く（v0.20.5）
+        Get-Process -Name StartMenuExperienceHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 800
+    }
     foreach ($v in (Get-QuietMismatch $Key)) {
         try { Set-RegDword $v[0] $v[1] ([int]$v[2]) } catch { $failed++; Write-Host ('（書けませんでした：' + $v[0] + '\' + $v[1] + '：' + $_.Exception.Message + '）') }
     }

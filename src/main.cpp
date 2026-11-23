@@ -45,7 +45,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.20.4";
+const wchar_t kVersion[] = L"0.20.5";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
