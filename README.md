@@ -1,4 +1,4 @@
-# まなびと講習準備（v0.19.6）
+# まなびと講習準備（v0.19.7）
 
 講習で使う Windows 11 の PC を点検し、講習用の設定にそろえるアプリです。
 
@@ -300,6 +300,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1 -Zip "%USE
   サインイン画面を単色に（DisableLogonBackgroundImage）、ロック画面を出さない（NoLockScreen。Pro では効かないことがある）、
   ロック画面のスポットライトを止める（RotatingLockScreenEnabled=0）、デスクトップの「この写真について」を隠し、デスクトップのスポットライトを止める。
   ロック画面が出る場合も、写真は毎日替わらず Windows の標準の 1 枚になる。再起動のあとに効く。
+- エクスプローラーの「よく使うフォルダー」（v0.19.7）：点検で件数（ピン留めは数えない）。［履歴を消す］で、ピン留めでないものだけを
+  「クイック アクセスから削除」で消す（ピン留めは残す）。残ったときの予備として、ピン留めが Windows の初めの 6 つだけなら記録のファイルごと消す
+  （初めの 6 つに戻る）。ピン留めの印を読めない Windows では何もしない。［設定をそろえる］で「よく使うフォルダー」「最近使ったファイル」の表示をオフ
+  （プロファイル quickAccessHistory、標準 hide）。
 - 点検に「この PC の健康」：空き容量（healthDiskMinGB、標準 10 GB）・時刻のずれ（time.windows.com、healthClockMaxSec、標準 120 秒）・
   電池の劣化（powercfg の電池のレポート、healthBatteryMinPct、標準 60%）。先生用の［教室の PC］にも出る。
 

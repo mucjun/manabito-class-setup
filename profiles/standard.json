@@ -10,6 +10,7 @@
   "windowsAds": "hide",
   "copilot": "hide",
   "lockScreenPhoto": "hide",
+  "quickAccessHistory": "hide",
   "healthDiskMinGB": 10,
   "healthClockMaxSec": 120,
   "healthBatteryMinPct": 60,

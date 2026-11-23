@@ -41,6 +41,14 @@ $script:QuietSets = @{
             @('HKCU:\Software\Policies\Microsoft\Windows\CloudContent', 'DisableSpotlightCollectionOnDesktop', 1)   # デスクトップのスポットライトを止める
         )
     }
+    'quickaccess' = @{
+        Name = 'エクスプローラーの「よく使うフォルダー」「最近使ったファイル」の表示'; Pref = 'quickAccessHistory'
+        Manual = 'エクスプローラーの「…」→「オプション」→「プライバシー」で、「最近使用したファイルを表示する」「頻繁に使用されるフォルダーを表示する」をオフにしてください。'
+        Values = @(
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer', 'ShowFrequent', 0),   # よく使うフォルダーを表示しない
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer', 'ShowRecent', 0)      # 最近使ったファイルを表示しない
+        )
+    }
     'copilot' = @{
         Name = 'Copilot'; Pref = 'copilot'
         Manual = 'タスクバーを右クリック →「タスクバーの設定」で Copilot をオフにしてください。'
@@ -101,6 +109,8 @@ function Test-EdgeFirstRun { param($Prof) Test-QuietItem $Prof 'edgefirstrun' }
 function Test-WindowsAds   { param($Prof) Test-QuietItem $Prof 'windowsads' }
 function Test-Copilot      { param($Prof) Test-QuietItem $Prof 'copilot' }
 function Test-LockScreenPhoto { param($Prof) Test-QuietItem $Prof 'lockscreen' }
+function Test-QuickAccessShow  { param($Prof) Test-QuietItem $Prof 'quickaccess' }
+function Set-QuickAccessShow   { param($Prof) Set-QuietItem $Prof 'quickaccess' }
 function Set-LockScreenPhoto  { param($Prof) Set-QuietItem $Prof 'lockscreen' }
 function Set-EdgeFirstRun  { param($Prof) Set-QuietItem $Prof 'edgefirstrun' }
 function Set-WindowsAds    { param($Prof) Set-QuietItem $Prof 'windowsads' }

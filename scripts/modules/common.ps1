@@ -173,3 +173,22 @@ function Get-ClassFilesOverlap {
     if ($desk -and $full -ieq ([System.IO.Path]::GetFullPath($desk).TrimEnd('\', '/'))) { return 'デスクトップのファイル' }
     return ''
 }
+
+# ---- エクスプローラーのクイック アクセス（v0.19.7）
+# 戻り値：@{ Ok（調べられたか）; Pinned（ピン留めの場所の一覧）; Others（ピン留めでない項目＝よく使うフォルダー・最近使ったファイル）}
+# ピン留めかは、エクスプローラーが持つ印 System.Home.IsPinned で判断する。印を読めない項目が 1 つでもあれば Ok=$false（消す処理はしない）。
+function Get-QuickAccessItems {
+    $r = @{ Ok = $false; Pinned = @(); Others = @() }
+    try {
+        $sh = New-Object -ComObject Shell.Application
+        $qa = $sh.Namespace('shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}')
+        if (-not $qa) { return $r }
+        foreach ($it in @($qa.Items())) {
+            $pin = $it.ExtendedProperty('System.Home.IsPinned')
+            if ($null -eq $pin) { return $r }   # 印を読めない：ピン留めを見分けられないので、何もしない
+            if ([bool]$pin) { $r.Pinned += [string]$it.Path } else { $r.Others += $it }
+        }
+        $r.Ok = $true
+    } catch { }
+    return $r
+}

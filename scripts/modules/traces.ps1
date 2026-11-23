@@ -211,3 +211,14 @@ function Test-ClassFiles {
     $state = 'NG'; if ($n -eq 0) { $state = 'OK' }
     return New-Row 'classfiles' $name $state ('{0} 個' -f $n) '空' ($p + ' ※ 前の講習の授業ファイル。［履歴を消す］で消します。')
 }
+
+function Test-QuickAccessFrequent {
+    param($Prof)
+    $name = 'エクスプローラーのよく使うフォルダー（クイック アクセス）'
+    $q = Get-QuickAccessItems
+    if (-not $q.Ok) { return New-Row 'quickaccess' $name 'NA' '調べられません' '0 件' 'この Windows では、ピン留めとよく使うフォルダーを見分けられませんでした。' }
+    $n = @($q.Others).Count
+    $state = 'OK'; if ($n -gt 0) { $state = 'NG' }
+    $names = (@($q.Others) | Select-Object -First 5 | ForEach-Object { $_.Name }) -join '・'
+    return New-Row 'quickaccess' $name $state ('{0} 件' -f $n) '0 件' ('ピン留めは数えていません（' + @($q.Pinned).Count + ' 個）。' + $(if ($names) { '例：' + $names } else { '' }))
+}

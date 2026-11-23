@@ -41,7 +41,8 @@ Say ''
 Say '1. GitHub の変更を取り込みます（git pull --rebase）' 'Cyan'
 if ($Zip) {
     # zip を使うときは、前の作業の残り（コミットしていない変更）があると上書きで混ざるため止める
-    $left = @(git status --porcelain | Where-Object { $_ })
+    # この部品（tools/release.ps1）だけの変更は数えない（zip にも同じものが入っているため。初めて置いたときなど）
+    $left = @(git status --porcelain | Where-Object { $_ -and $_ -notmatch 'tools[\\/]release\.ps1\s*$' })
     if ($left.Count -gt 0) { Stop-Here ('コミットしていない変更が残っています（' + $left.Count + ' 件）。前の作業を終えるか、git status で確かめてください。') }
 }
 if ((Invoke-GitCommand pull --rebase) -ne 0) { Stop-Here '取り込めませんでした（git pull --rebase）。' }

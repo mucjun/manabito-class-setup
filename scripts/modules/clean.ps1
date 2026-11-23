@@ -371,12 +371,63 @@ function Clear-ClassFiles {
     return Format-CleanResult 'classfiles' $name $items.Count $failed $p
 }
 
+# ---------------------------------------------------------------- エクスプローラーのよく使うフォルダー（v0.19.7）
+# ピン留めでない項目だけを「クイック アクセスから削除」（removefromhome）で消す。ピン留めは残す。
+# それで残ったときの予備：ピン留めが Windows の初めの 6 つ（デスクトップ・ダウンロード・ドキュメント・ピクチャ・ミュージック・ビデオ）だけなら、
+# 記録のファイル（f01b4d95cf55d32a.automaticDestinations-ms）を消す。Windows が初めの 6 つを作り直すので、結果は同じになる。
+function Clear-QuickAccessFrequent {
+    param($Prof)
+    $name = 'エクスプローラーのよく使うフォルダー（クイック アクセス）'
+    $q = Get-QuickAccessItems
+    if (-not $q.Ok) { return New-Row 'quickaccess' $name 'SKIP' '調べられません' '0 件' 'この Windows では、ピン留めとよく使うフォルダーを見分けられないため、何も消していません（ピン留めを守るため）。' }
+    $before = @($q.Others).Count
+    if ($before -eq 0) { return New-Row 'quickaccess' $name 'SAME' '0 件' '0 件' ('ピン留めは残しています（' + @($q.Pinned).Count + ' 個）。') }
+    foreach ($it in @($q.Others)) {
+        try { $it.InvokeVerb('removefromhome') } catch { }
+    }
+    Start-Sleep -Milliseconds 800
+    $after = Get-QuickAccessItems
+    $left = if ($after.Ok) { @($after.Others).Count } else { $before }
+    $note = ''
+    if ($left -gt 0) {
+        # 予備：ピン留めが初めの 6 つだけなら、記録のファイルごと消す
+        $defaults = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments'), [Environment]::GetFolderPath('MyPictures'),
+                      [Environment]::GetFolderPath('MyMusic'), [Environment]::GetFolderPath('MyVideos'))
+        if ($env:USERPROFILE) { $defaults += (Join-Path $env:USERPROFILE 'Downloads') }
+        try {
+            $dl = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}'
+            if ($dl) { $defaults += [Environment]::ExpandEnvironmentVariables([string]$dl) }
+        } catch { }
+        $onlyDefaults = $true
+        foreach ($p in @($q.Pinned)) { if (-not ($defaults | Where-Object { $_ -and $_ -ieq $p })) { $onlyDefaults = $false } }
+        $file = Join-Path $env:APPDATA 'Microsoft\Windows\Recent\AutomaticDestinations\f01b4d95cf55d32a.automaticDestinations-ms'
+        if ($onlyDefaults -and (Test-Path -LiteralPath $file)) {
+            # エクスプローラーが覚えている内容で書き戻さないよう、止めてから消し、また起動する
+            Get-Process explorer -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 800
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+            Start-Process explorer.exe
+            Start-Sleep -Seconds 2
+            $again = Get-QuickAccessItems
+            $left = if ($again.Ok) { @($again.Others).Count } else { $left }
+            $note = '記録のファイルを消して、Windows の初めのピン留め（6 つ）に戻しました。'
+        } elseif (-not $onlyDefaults) {
+            $note = '初めのものではないピン留めがあるため、記録のファイルは消していません（ピン留めを守るため）。'
+        }
+    }
+    if ($left -gt 0) {
+        return New-Row 'quickaccess' $name 'FAIL' ('{0} 件' -f $before) '0 件' ('{0} 件が残りました。{1}エクスプローラーで右クリック →「クイック アクセスから削除」で消せます。' -f $left, $note)
+    }
+    return New-Row 'quickaccess' $name 'DONE' ('{0} 件' -f $before) '0 件' ('ピン留めは残しています（' + @($q.Pinned).Count + ' 個）。' + $note)
+}
+
 # ---------------------------------------------------------------- まとめて（clean.ps1・oneclick.ps1 から使う）
 
 function Invoke-CleanAll {
     param($Prof, [System.Collections.Generic.List[object]]$Rows)
     $steps = @(
         @('Clear-RecentFiles',    '最近使ったファイル'),
+        @('Clear-QuickAccessFrequent', 'エクスプローラーのよく使うフォルダー'),
         @('Clear-StartMenuRecent', 'スタートの「最近使用」'),
         @('Clear-ExplorerTyped',  'アドレス欄・「ファイル名を指定して実行」の入力履歴'),
         @('Clear-OfficeMru',      'Office の最近使ったファイル'),
