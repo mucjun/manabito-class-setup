@@ -45,7 +45,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.20.0";
+const wchar_t kVersion[] = L"0.20.1";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -4116,7 +4116,7 @@ bool SelfInstallIfNeeded(HANDLE& instanceMutex) {
     const CleanupPlan plan = PlanCleanup(g.exeDir);
 
     std::wstring content = L"このアプリを\n" + target + L"\nに入れて、そこから起動します（管理者の確認が出ます）。\n"
-                           L"デスクトップとスタートメニューにショートカットを作ります。";
+                           L"スタートメニューの「まなびとツール」にショートカットを作ります（デスクトップには置きません）。";
     if (theirs > mine) {
         content = L"より新しい版（" + VersionText(theirs) + L"）が " + target + L" に入っています。入れ替えずに、そちらを起動します。";
     }

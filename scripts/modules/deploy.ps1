@@ -866,6 +866,17 @@ function Get-AppsManifest {
     return ($text | ConvertFrom-Json -ErrorAction Stop)
 }
 
+# デスクトップ（全員）にある、このアプリを指す同じ名前のショートカットを消す
+function Remove-DesktopShortcut {
+    param([string]$Target, [string]$Name)
+    $lnk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) ($Name + '.lnk')
+    if (-not (Test-Path -LiteralPath $lnk)) { return }
+    try {
+        $ws = New-Object -ComObject WScript.Shell
+        if ($ws.CreateShortcut($lnk).TargetPath -ieq $Target) { Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue }
+    } catch { }
+}
+
 function New-Shortcut {
     param([string]$Target, [string]$Name)
     $desk = [Environment]::GetFolderPath('CommonDesktopDirectory')
@@ -938,9 +949,8 @@ function Install-OneApp {
     $note = ''
     if (Test-Path -LiteralPath $old) { $note = '前の版は ' + (Split-Path -Leaf $old) + ' に残しています。' }
     try { New-ToolsShortcut (Join-Path $dest $exe) $name; $note += 'スタートメニューの「まなびとツール」に入れました。' } catch { $note += 'スタートメニューに入れられませんでした。' }
-    if ($App.shortcut -eq $true) {
-        try { New-Shortcut (Join-Path $dest $exe) $name; $note += 'デスクトップ（全員）にショートカットを作りました。' } catch { $note += 'ショートカットは作れませんでした。' }
-    }
+    # デスクトップには置かない（受講生が安易に触らないように。目録の shortcut の指定は使わない。v0.20.1）。前の版が置いたものは片付ける
+    Remove-DesktopShortcut (Join-Path $dest $exe) $name
     return New-Row $id $name 'DONE' $curText ('v' + $ver) $note
 }
 

@@ -54,6 +54,7 @@ $checks = @(
     @('見た目と通知',       'Test-EdgeFirstRun',   'Edge の最初の設定の画面'),
     @('見た目と通知',       'Test-LockScreenPhoto', 'ロック画面・サインイン画面の写真'),
     @('見た目と通知',       'Test-QuickAccessShow', 'エクスプローラーの履歴の表示'),
+    @('見た目と通知',       'Test-StartAppsList',  'スタートの「最近追加したアプリ」「よく使うアプリ」'),
     @('見た目と通知',       'Test-Notifications',  '通知（右下のお知らせ）'),
     @('見た目と通知',       'Test-OneDriveStartup','OneDrive の自動起動'),
     @('音',                 'Test-Volume',         '音量'),

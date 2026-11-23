@@ -49,6 +49,14 @@ $script:QuietSets = @{
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer', 'ShowRecent', 0)      # 最近使ったファイルを表示しない
         )
     }
+    'startapps' = @{
+        Name = 'スタートの「最近追加したアプリ」「よく使うアプリ」'; Pref = 'startAppsList'
+        Manual = '設定 →「個人用設定」→「スタート」で、「最近追加したアプリを表示する」「よく使うアプリを表示する」をオフにしてください。'
+        Values = @(
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer', 'HideRecentlyAddedApps', 1),          # 最近追加したアプリを出さない（このアプリ・まなびとバックアップも出ない）
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'Start_TrackProgs', 0)   # よく使うアプリを出さない
+        )
+    }
     'copilot' = @{
         Name = 'Copilot'; Pref = 'copilot'
         Manual = 'タスクバーを右クリック →「タスクバーの設定」で Copilot をオフにしてください。'
@@ -110,6 +118,8 @@ function Test-WindowsAds   { param($Prof) Test-QuietItem $Prof 'windowsads' }
 function Test-Copilot      { param($Prof) Test-QuietItem $Prof 'copilot' }
 function Test-LockScreenPhoto { param($Prof) Test-QuietItem $Prof 'lockscreen' }
 function Test-QuickAccessShow  { param($Prof) Test-QuietItem $Prof 'quickaccess' }
+function Test-StartAppsList    { param($Prof) Test-QuietItem $Prof 'startapps' }
+function Set-StartAppsList     { param($Prof) Set-QuietItem $Prof 'startapps' }
 function Set-QuickAccessShow   { param($Prof) Set-QuietItem $Prof 'quickaccess' }
 function Set-LockScreenPhoto  { param($Prof) Set-QuietItem $Prof 'lockscreen' }
 function Set-EdgeFirstRun  { param($Prof) Set-QuietItem $Prof 'edgefirstrun' }

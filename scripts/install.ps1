@@ -67,14 +67,25 @@ try {
     Copy-Item -LiteralPath (Join-Path $src 'ManabitoClassSetup.exe') -Destination (Join-Path $dst 'ManabitoClassSetup.exe') -Force
     $log.Add('入れた先: ' + $dst)
 
-    # ショートカット（全員のデスクトップとスタートメニュー）
+    # ショートカット：スタートメニューの「まなびとツール」だけ（デスクトップには置かない。受講生が安易に触らないように。v0.20.1）
     $exe = Join-Path $dst 'ManabitoClassSetup.exe'
     $ws = New-Object -ComObject WScript.Shell
     $tools = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'まなびとツール'
     if (-not (Test-Path -LiteralPath $tools)) { New-Item -ItemType Directory -Path $tools -Force | Out-Null }
     $oldStart = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'まなびと講習準備.lnk'   # v0.15 までの場所
     if (Test-Path -LiteralPath $oldStart) { Remove-Item -LiteralPath $oldStart -Force -ErrorAction SilentlyContinue }
-    foreach ($dir in @([Environment]::GetFolderPath('CommonDesktopDirectory'), $tools)) {
+    # 前の版がデスクトップ（全員・この利用者）に置いたショートカットを片付ける（このアプリを指しているものだけ）
+    foreach ($deskDir in @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('Desktop'))) {
+        if (-not $deskDir) { continue }
+        $oldLnk = Join-Path $deskDir 'まなびと講習準備.lnk'
+        if (Test-Path -LiteralPath $oldLnk) {
+            try {
+                $t = $ws.CreateShortcut($oldLnk).TargetPath
+                if ($t -and ($t -ilike '*\ManabitoClassSetup.exe')) { Remove-Item -LiteralPath $oldLnk -Force -ErrorAction SilentlyContinue }
+            } catch { }
+        }
+    }
+    foreach ($dir in @($tools)) {
         if (-not $dir) { continue }
         $lnk = $ws.CreateShortcut((Join-Path $dir 'まなびと講習準備.lnk'))
         $lnk.TargetPath = $exe
@@ -83,7 +94,7 @@ try {
         $lnk.Description = 'まなびと講習準備'
         $lnk.Save()
     }
-    $log.Add('ショートカット: デスクトップ（全員）・スタートメニューの「まなびとツール」')
+    $log.Add('ショートカット: スタートメニューの「まなびとツール」（デスクトップには置かない）')
     # Windows のアイコンの一時保存を更新する（古いアイコン＝白い紙のままにならないように）
     try { Start-Process -FilePath (Join-Path $env:WINDIR 'System32\ie4uinit.exe') -ArgumentList '-show' -WindowStyle Hidden -Wait -ErrorAction Stop } catch { }
 
