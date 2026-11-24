@@ -421,6 +421,21 @@ function Clear-QuickAccessFrequent {
     return New-Row 'quickaccess' $name 'DONE' ('{0} 件' -f $before) '0 件' ('ピン留めは残しています（' + @($q.Pinned).Count + ' 個）。' + $note)
 }
 
+# ---------------------------------------------------------------- Local のサイト（v0.20.9。淳さんの指定で消す）
+function Clear-LocalSites {
+    param($Prof)
+    $name = 'Local のサイト（Local Sites）'
+    $p = Get-LocalSitesPath
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { return New-Row 'localsites' $name 'SKIP' 'なし' '空' 'Local（WordPress）を使っていません。' }
+    if (Test-IsProtected $p) { return New-Row 'localsites' $name 'FAIL' '' '空' 'このアプリの場所と重なるため、念のため消していません。' }
+    $items = @(Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })
+    if ($items.Count -eq 0) { return New-Row 'localsites' $name 'SAME' '0 個' '空' '' }
+    $stopped = Stop-LocalWpProcesses   # サイトを動かす部品（MySQL・nginx など）がファイルをつかんでいると消せないため
+    $failed = Remove-Items $items
+    $note = ''; if ($stopped -gt 0) { $note = ('サイトを動かしていた部品を {0} 個止めました。' -f $stopped) }
+    return Format-CleanResult 'localsites' $name $items.Count $failed $note
+}
+
 # ---------------------------------------------------------------- まとめて（clean.ps1・oneclick.ps1 から使う）
 
 function Invoke-CleanAll {
@@ -442,6 +457,7 @@ function Invoke-CleanAll {
         @('Clear-OfficeSignIn',   'Office のサインイン'),
         @('Clear-AdobeSignIn',    'Adobe Creative Cloud のサインイン'),
         @('Clear-StoredCredentials', '保存されたログイン情報'),
+        @('Clear-LocalSites',     'Local のサイト'),
         @('Clear-SignInApps',     'ほかのアプリ・ブラウザーのログイン'),
         @('Clear-ClassFiles',     '受け取った授業ファイル')
     )

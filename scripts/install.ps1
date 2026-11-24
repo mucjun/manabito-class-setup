@@ -65,6 +65,10 @@ try {
         Copy-Item -Path (Join-Path $srcProf '*') -Destination $dstProf -Recurse -Force
     }
     Copy-Item -LiteralPath (Join-Path $src 'ManabitoClassSetup.exe') -Destination (Join-Path $dst 'ManabitoClassSetup.exe') -Force
+    # Windows セキュリティの除外のバッチも入れる（元の展開フォルダーは消すことがあるため、入れた先から使えるように。v0.20.7）
+    foreach ($cmd in @(Get-ChildItem -LiteralPath $src -Filter 'defender_exclude_*.cmd' -File -ErrorAction SilentlyContinue)) {
+        Copy-Item -LiteralPath $cmd.FullName -Destination (Join-Path $dst $cmd.Name) -Force
+    }
     $log.Add('入れた先: ' + $dst)
 
     # ショートカット：スタートメニューの「まなびとツール」だけ（デスクトップには置かない。受講生が安易に触らないように。v0.20.1）

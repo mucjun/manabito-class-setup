@@ -37,7 +37,7 @@
   "adobeCleanerUrl": "https://swupmf.adobe.com/webfeed/CleanerTool/win/AdobeCreativeCloudCleanerTool.exe",
   "ownAppsManifest": "https://raw.githubusercontent.com/mucjun/manabito-class-setup/main/release/apps.json",
   "adobe": "install",
-  "extraApps": "acrobat-reader,vscode",
+  "extraApps": "acrobat-reader,vscode,figma,localwp",
   "pdfDefault": "acrobat-reader",
   "ownApps": []
 }

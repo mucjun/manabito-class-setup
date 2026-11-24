@@ -192,3 +192,32 @@ function Get-QuickAccessItems {
     } catch { }
     return $r
 }
+
+# ---- Local（WordPress を PC の中で動かすアプリ）のサイト（v0.20.9）
+function Get-LocalSitesPath {
+    if (-not $env:USERPROFILE) { return '' }
+    return (Join-Path $env:USERPROFILE 'Local Sites')
+}
+
+# Local の場所から動いている部品（Local 本体・MySQL・nginx・PHP など）を止める。名前だけで止めると、XAMPP など別のアプリの同じ名前の部品まで止めるため、場所で見分ける
+function Stop-LocalWpProcesses {
+    $roots = @()
+    if ($env:APPDATA) { $roots += (Join-Path $env:APPDATA 'Local') }                  # サイトを動かす部品（lightning-services）
+    if ($env:LOCALAPPDATA) { $roots += (Join-Path $env:LOCALAPPDATA 'Programs\Local') }
+    foreach ($pf in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) { if ($pf) { $roots += (Join-Path $pf 'Local') } }
+    $sites = Get-LocalSitesPath; if ($sites) { $roots += $sites }
+    $stopped = 0
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $p.Path } catch { }
+        if (-not $path) { continue }
+        foreach ($r in $roots) {
+            if ($path.StartsWith($r.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                try { Stop-Process -Id $p.Id -Force -ErrorAction Stop; $stopped++ } catch { }
+                break
+            }
+        }
+    }
+    if ($stopped -gt 0) { Start-Sleep -Seconds 2 }
+    return $stopped
+}

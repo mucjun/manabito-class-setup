@@ -4,3 +4,5 @@
 acrobat-reader|Adobe Acrobat Reader|Adobe.Acrobat.Reader.64-bit|Adobe Acrobat*|1|PDF を開く・印刷する。初回の確認と有料版の案内を出さない設定を入れる
 paintdotnet|Paint.NET|dotPDN.PaintDotNet|paint.net*|0|無料の画像編集アプリ
 vscode|Visual Studio Code|Microsoft.VisualStudioCode|Microsoft Visual Studio Code*|0|プログラムや HTML を書くエディター。日本語化の拡張機能も入れる
+figma|Figma|Figma.Figma|Figma*|0|デザインのアプリ（WEB の画面の設計）。PC 全体に入れる版（MSI）は自動で更新されない。使うときは Figma のアカウントでサインインする
+localwp|Local|Flywheel.Local|Local [0-9]*|0|WordPress を PC の中で動かすアプリ。サイトを作るときに管理者の確認が出る（hosts の書き換え）

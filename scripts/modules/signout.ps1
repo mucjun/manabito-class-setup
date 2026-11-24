@@ -260,7 +260,9 @@ function Get-SignInApps {
         @{ Name = 'WhatsApp';            Proc = @('WhatsApp');                Paths = @("$L\Packages\5319275A.WhatsAppDesktop_*\LocalState") },
         @{ Name = 'Spotify';             Proc = @('Spotify');                 Paths = @("$R\Spotify") },
         @{ Name = 'Notion';              Proc = @('Notion');                  Paths = @("$R\Notion") },
-        @{ Name = 'Visual Studio Code（サインイン・最近開いたもの）'; Proc = @('Code'); Paths = @("$R\Code") }
+        @{ Name = 'Visual Studio Code（サインイン・最近開いたもの）'; Proc = @('Code'); Paths = @("$R\Code") },
+        @{ Name = 'Figma（サインイン）';  Proc = @('Figma', 'figma_agent');   Paths = @("$R\Figma") },                      # v0.20.8
+        @{ Name = 'Local（サインイン・サイトの一覧）'; Proc = @('Local');       Paths = @("$R\Local") }                       # v0.20.8（AppData\Roaming\Local。AppData\Local とは別）
     )
 }
 

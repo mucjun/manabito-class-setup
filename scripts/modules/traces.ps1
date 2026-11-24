@@ -222,3 +222,13 @@ function Test-QuickAccessFrequent {
     $names = (@($q.Others) | Select-Object -First 5 | ForEach-Object { $_.Name }) -join '・'
     return New-Row 'quickaccess' $name $state ('{0} 件' -f $n) '0 件' ('ピン留めは数えていません（' + @($q.Pinned).Count + ' 個）。' + $(if ($names) { '例：' + $names } else { '' }))
 }
+
+function Test-LocalSites {
+    param($Prof)
+    $name = 'Local のサイト（Local Sites）'
+    $p = Get-LocalSitesPath
+    if (-not $p -or -not (Test-Path -LiteralPath $p)) { return New-Row 'localsites' $name 'NA' 'なし' '空' 'Local（WordPress）を使っていません。' }
+    $n = @(Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' }).Count
+    $state = 'OK'; if ($n -gt 0) { $state = 'NG' }
+    return New-Row 'localsites' $name $state ('{0} 個' -f $n) '空' ($p + ' ※ 前の受講生が作った WordPress のサイト。［履歴を消す］で消します。')
+}

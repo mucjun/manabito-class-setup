@@ -68,6 +68,11 @@ function Move-TeacherFiles {
     if ($pics) { $rows += Move-AreaToArchive 'archive-screenshots' 'スクリーンショット' (Join-Path $pics 'Screenshots') $dest }
     $vids = [Environment]::GetFolderPath('MyVideos')
     if ($vids) { $rows += Move-AreaToArchive 'archive-captures' '画面の録画' (Join-Path $vids 'Captures') $dest }
+    $sites = Get-LocalSitesPath
+    if ($sites -and (Test-Path -LiteralPath $sites)) {
+        $null = Stop-LocalWpProcesses   # サイトを動かす部品がファイルをつかんでいると移せないため
+        $rows += Move-AreaToArchive 'archive-localsites' 'Local のサイト' $sites $dest
+    }
     return $rows
 }
 

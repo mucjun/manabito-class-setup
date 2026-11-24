@@ -81,6 +81,7 @@ $checks = @(
     @('前の受講生のサインイン', 'Test-AdobeSignIn',      'Adobe Creative Cloud のサインイン'),
     @('前の受講生のサインイン', 'Test-StoredCredentials', '保存されたログイン情報'),
     @('前の受講生のサインイン', 'Test-SignInApps',       'ほかのアプリ・ブラウザーのログイン'),
+    @('前の受講生の痕跡',   'Test-LocalSites',     'Local のサイト'),
     @('前の受講生のサインイン', 'Test-UserInstalledApps', 'この利用者が入れたアプリ'),
     @('アプリ',             'Test-Office',         'Microsoft 365（Office）'),
     @('アプリ',             'Test-AdobeCC',        'Adobe Creative Cloud デスクトップアプリ'),
