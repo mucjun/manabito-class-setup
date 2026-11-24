@@ -314,6 +314,7 @@ function Invoke-ApplyAll {
         @('Set-QuickAccessShow', 'エクスプローラーの履歴の表示'),
         @('Set-StartAppsList',   'スタートの「最近使用」'),
         @('Set-StartAllAppsView', 'スタートの「すべて」のビュー'),
+        @('Set-AdobeStartup',    'Adobe CC の起動時の動き'),
         @('Set-Notifications',   '通知（右下のお知らせ）'),
         @('Set-OneDriveStartup', 'OneDrive の自動起動'),
         @('Set-VolumeMute',      '音量'),

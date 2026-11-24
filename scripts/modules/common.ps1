@@ -221,3 +221,51 @@ function Stop-LocalWpProcesses {
     if ($stopped -gt 0) { Start-Sleep -Seconds 2 }
     return $stopped
 }
+
+# ---- アプリの設定（前の受講生が変えたもの。v0.20.10）
+# このツールで入れるアプリの設定のうち、前の受講生が変えると次の受講生が困るもの。戻り値：@{ App; Kind('file'|'dir'|'reg'); Path; Proc(開いていると消さない) } の一覧（あるものだけ）
+function Get-AppSettingItems {
+    $items = @()
+    $R = $env:APPDATA; $L = $env:LOCALAPPDATA
+    # Office：Word の標準テンプレート・リボンとクイック アクセス ツール バーの変更・Excel の起動時に開くファイル（消すと Office が初めの状態で作り直す）
+    if ($R) {
+        foreach ($n in @('Normal.dotm', 'NormalEmail.dotm')) {
+            $f = Join-Path $R ('Microsoft\Templates\' + $n)
+            if (Test-Path -LiteralPath $f) { $items += @{ App = 'Word'; Kind = 'file'; Path = $f; Proc = @('WINWORD', 'OUTLOOK') } }
+        }
+        $xs = Join-Path $R 'Microsoft\Excel\XLSTART'
+        if (Test-Path -LiteralPath $xs) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $xs -File -Force -ErrorAction SilentlyContinue)) { $items += @{ App = 'Excel'; Kind = 'file'; Path = $f.FullName; Proc = @('EXCEL') } }
+        }
+    }
+    if ($L) {
+        $ui = Join-Path $L 'Microsoft\Office'
+        if (Test-Path -LiteralPath $ui) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $ui -Filter '*.officeUI' -File -Force -ErrorAction SilentlyContinue)) {
+                $items += @{ App = 'Office のリボン'; Kind = 'file'; Path = $f.FullName; Proc = @('WINWORD', 'EXCEL', 'POWERPNT', 'OUTLOOK') }
+            }
+        }
+    }
+    # Adobe CC のアプリの設定（Acrobat のフォルダーは残す）
+    if ($R) {
+        $ad = Join-Path $R 'Adobe'
+        if (Test-Path -LiteralPath $ad) {
+            foreach ($d in @(Get-ChildItem -LiteralPath $ad -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike 'Acrobat*' })) {
+                $items += @{ App = 'Adobe CC'; Kind = 'dir'; Path = $d.FullName; Proc = @('Photoshop', 'Illustrator', 'InDesign', 'AfterFX', 'Adobe Premiere Pro', 'Animate', 'Dreamweaver', 'Lightroom', 'Adobe Audition', 'Creative Cloud') }
+            }
+        }
+    }
+    # Acrobat Reader の最近使ったファイル（同意や初回の確認の設定は残す）
+    foreach ($base in @('HKCU:\Software\Adobe\Acrobat Reader', 'HKCU:\Software\Adobe\Adobe Acrobat')) {
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        foreach ($ver in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)) {
+            foreach ($k in @('AVGeneral\cRecentFiles', 'AVGeneral\cRecentFolders')) {
+                $kp = Join-Path $ver.PSPath $k
+                if (Test-Path -LiteralPath $kp) { $items += @{ App = 'Acrobat Reader'; Kind = 'reg'; Path = $kp; Proc = @('Acrobat', 'AcroRd32') } }
+            }
+        }
+    }
+    # Paint.NET の設定（最近使ったファイルを含む）
+    if (Test-Path -LiteralPath 'HKCU:\Software\paint.net') { $items += @{ App = 'Paint.NET'; Kind = 'reg'; Path = 'HKCU:\Software\paint.net'; Proc = @('paintdotnet', 'PaintDotNet') } }
+    return ,$items
+}

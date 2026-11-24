@@ -436,6 +436,34 @@ function Clear-LocalSites {
     return Format-CleanResult 'localsites' $name $items.Count $failed $note
 }
 
+# ---------------------------------------------------------------- アプリの設定（前の受講生が変えたもの。v0.20.10。淳さんの指定）
+function Clear-AppSettings {
+    param($Prof)
+    $name = 'アプリの設定（前の受講生が変えたもの）'
+    $items = Get-AppSettingItems
+    if ($items.Count -eq 0) { return New-Row 'appsettings' $name 'SAME' 'なし' 'なし' '' }
+    $done = 0; $failed = @(); $skipped = @()
+    foreach ($it in $items) {
+        $open = @(Get-Process -Name $it.Proc -ErrorAction SilentlyContinue)
+        if ($open.Count -gt 0) { if ($skipped -notcontains $it.App) { $skipped += $it.App }; continue }   # 開いていると消せない・書き戻される
+        try {
+            if ($it.Kind -eq 'reg') { Remove-Item -LiteralPath $it.Path -Recurse -Force -ErrorAction Stop }
+            else {
+                if (Test-IsProtected $it.Path) { continue }
+                $f = @(Get-Item -LiteralPath $it.Path -Force -ErrorAction Stop)
+                if ((Remove-Items $f) -gt 0) { throw '消せませんでした' }
+            }
+            $done++
+        } catch { if ($failed -notcontains $it.App) { $failed += $it.App } }
+    }
+    $apps = @($items | ForEach-Object { $_.App } | Select-Object -Unique) -join '・'
+    $note = ''
+    if ($skipped.Count) { $note += ('開いていたので消していないもの：' + ($skipped -join '・') + '（閉じてからもう一度［履歴を消す］）。') }
+    if ($failed.Count) { $note += ('消せなかったもの：' + ($failed -join '・') + '。') }
+    if ($failed.Count -or $skipped.Count) { return New-Row 'appsettings' $name 'FAIL' $apps 'なし' $note }
+    return New-Row 'appsettings' $name 'DONE' $apps 'なし' '初めの状態に戻しました（次に開くと、アプリが作り直します）。'
+}
+
 # ---------------------------------------------------------------- まとめて（clean.ps1・oneclick.ps1 から使う）
 
 function Invoke-CleanAll {
@@ -458,6 +486,7 @@ function Invoke-CleanAll {
         @('Clear-AdobeSignIn',    'Adobe Creative Cloud のサインイン'),
         @('Clear-StoredCredentials', '保存されたログイン情報'),
         @('Clear-LocalSites',     'Local のサイト'),
+        @('Clear-AppSettings',    'アプリの設定'),
         @('Clear-SignInApps',     'ほかのアプリ・ブラウザーのログイン'),
         @('Clear-ClassFiles',     '受け取った授業ファイル')
     )

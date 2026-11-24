@@ -45,7 +45,7 @@ using std::min;
 namespace {
 
 const wchar_t kAppName[] = L"まなびと講習準備";
-const wchar_t kVersion[] = L"0.20.9";
+const wchar_t kVersion[] = L"0.20.13";
 const wchar_t kClassName[] = L"ManabitoClassSetupWindow";
 const DWORD kTimeoutMs = 180000;       // 点検が 3 分を超えたら打ち切る
 const DWORD kApplyTimeoutMs = 300000;  // そろえるのが 5 分を超えたら待つのをやめる
@@ -905,9 +905,42 @@ std::wstring CurrentUserName() {
 
 bool ConfirmWindowsUpdate();  // 後で定義
 
+// ---- プロファイルを切り替えたときの知らせ（v0.20.10。淳さんの指定）
+std::string Utf8Of(const std::wstring& w);  // 後で定義
+// 前回［設定をそろえる］［まとめて実行］をしたプロファイル（ファイル名）を覚えておき、違うプロファイルで行うときに知らせる
+std::wstring LastProfilePath() { return AppDataDir() + L"\\last_profile.txt"; }
+
+std::wstring ProfileKey(const std::wstring& path) {
+    const size_t p = path.find_last_of(L"\\/");
+    return p == std::wstring::npos ? path : path.substr(p + 1);
+}
+
+void NoteProfileUsed(const std::wstring& tsv) {
+    if (!FileExists(tsv)) return;  // 作業が動いたときだけ
+    const std::string key = Utf8Of(ProfileKey(SelectedProfilePath()));
+    HANDLE h = CreateFileW(LastProfilePath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD w = 0;
+    WriteFile(h, key.data(), static_cast<DWORD>(key.size()), &w, nullptr);
+    CloseHandle(h);
+}
+
+// 戻り値：続けてよいか（［キャンセル］なら false）
+bool ConfirmProfileSwitch() {
+    std::string last;
+    if (!ReadAllBytes(LastProfilePath(), last) || last.empty()) return true;  // 初めて
+    const std::wstring cur = ProfileKey(SelectedProfilePath());
+    if (Utf8Of(cur) == last) return true;
+    const std::wstring msg =
+        L"プロファイルを切り替えた場合、別のプロファイルで準備したアプリは残ります。サインイン情報や設定は消えます。\n\n"
+        L"（アプリを消したいときは、「時間のかかる準備」のスイッチをオフにするか、Windows の「設定」→「アプリ」から削除してください。）\n\n続けますか？";
+    return MessageBoxW(g.hwnd, msg.c_str(), kAppName, MB_OKCANCEL | MB_ICONINFORMATION) == IDOK;
+}
+
 void StartApply() {
     if (g.running) return;
     if (!ConfirmWindowsUpdate()) return;
+    if (!ConfirmProfileSwitch()) return;
     std::wstring script = g.exeDir + L"\\scripts\\apply.ps1";
     if (!FileExists(script)) {
         MessageBoxW(g.hwnd, (L"そろえる部品が見つかりません。\n\n" + script).c_str(), kAppName, MB_OK | MB_ICONWARNING);
@@ -966,7 +999,96 @@ struct ElevatedText {
     const wchar_t* failTitle;   // 失敗の一覧の見出し
 };
 
-void FinishElevated(JobResult* res, const std::wstring& tsv, const std::wstring& log, const ElevatedText& t) {
+// ---- そろえたあとの結果と再起動の秒読み（v0.20.13。淳さんの指定）
+const int kBtnRestartNow = 5101, kBtnRestartCancel = 5102;
+const int kRestartSeconds = 300;  // 5 分
+
+struct RestartPrompt {
+    bool countdown = true;  // 先生用の窓を開いているときは秒読みしない
+};
+
+HRESULT CALLBACK RestartPromptCallback(HWND h, UINT note, WPARAM wp, LPARAM, LONG_PTR ref) {
+    const RestartPrompt* rp = reinterpret_cast<const RestartPrompt*>(ref);
+    if (note == TDN_CREATED && rp->countdown) {
+        SendMessageW(h, TDM_SET_PROGRESS_BAR_RANGE, 0, MAKELPARAM(0, kRestartSeconds));
+        SendMessageW(h, TDM_SET_PROGRESS_BAR_POS, kRestartSeconds, 0);
+    }
+    if (note == TDN_TIMER && rp->countdown) {
+        const int left = kRestartSeconds - static_cast<int>(wp / 1000);
+        if (left <= 0) {
+            SendMessageW(h, TDM_CLICK_BUTTON, kBtnRestartNow, 0);
+            return S_OK;
+        }
+        const std::wstring t = L"あと " + std::to_wstring(left / 60) + L" 分 " + std::to_wstring(left % 60) +
+                               L" 秒で、自動で再起動します。保存していないファイルがあるアプリは、Windows が「保存しますか」と聞きます。";
+        SendMessageW(h, TDM_UPDATE_ELEMENT_TEXT, TDE_FOOTER, reinterpret_cast<LPARAM>(t.c_str()));
+        SendMessageW(h, TDM_SET_PROGRESS_BAR_POS, left, 0);
+    }
+    return S_OK;
+}
+
+// Windows のふつうの再起動（スタート →「再起動」と同じ。強制的には閉じない）
+bool RebootNow() {
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+        TOKEN_PRIVILEGES tp{};
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        if (LookupPrivilegeValueW(nullptr, SE_SHUTDOWN_NAME, &tp.Privileges[0].Luid)) AdjustTokenPrivileges(token, FALSE, &tp, 0, nullptr, nullptr);
+        CloseHandle(token);
+    }
+    return ExitWindowsEx(EWX_REBOOT, SHTDN_REASON_MAJOR_APPLICATION | SHTDN_REASON_MINOR_RECONFIG | SHTDN_REASON_FLAG_PLANNED) != FALSE;
+}
+
+// 結果（OK ○件・NG ○件）と、再起動の確認（5 分の秒読み。何もしないと再起動）
+void ShowResultAndRestart(const std::vector<Row>& results, const std::wstring& log) {
+    int ok = 0, ng = 0, other = 0;
+    std::wstring ngList;
+    for (const auto& r : results) {
+        if (r.id == L"total" || r.id == L"explorer") continue;
+        if (r.state == L"DONE" || r.state == L"SAME") ++ok;
+        else if (r.state == L"FAIL") {
+            ++ng;
+            if (ng <= 8) ngList += L"・" + r.name + (r.detail.empty() ? std::wstring() : L"：" + r.detail) + L"\n";
+        } else ++other;
+    }
+    if (ng > 8) ngList += L"・ほか " + std::to_wstring(ng - 8) + L" 件\n";
+    RestartPrompt rp;
+    rp.countdown = !share::IsServerRunning();  // 先生用の窓を開いている PC では秒読みしない（配布などが途中で止まるため）
+    const std::wstring title = ng ? L"そろえました（うまくいかなかった項目があります）" : L"そろえました";
+    std::wstring content = L"OK " + std::to_wstring(ok) + L" 件・NG " + std::to_wstring(ng) + L" 件" +
+                           (other ? L"（対象外 " + std::to_wstring(other) + L" 件）" : std::wstring()) + L"\n\n";
+    if (ng) content += L"NG の項目：\n" + ngList + L"\n記録：" + log + L"\n\n";
+    content += L"設定の一部は、再起動のあとに効きます。再起動しますか？";
+    const std::wstring footer = rp.countdown ? L"あと 5 分 0 秒で、自動で再起動します。" : L"先生用の窓を開いているため、自動では再起動しません。";
+    TASKDIALOG_BUTTON btns[] = {{kBtnRestartNow, L"いますぐ再起動"}, {kBtnRestartCancel, L"再起動を取りやめる"}};
+    TASKDIALOGCONFIG tc{};
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g.hwnd;
+    tc.hInstance = g.inst;
+    tc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | (rp.countdown ? (TDF_CALLBACK_TIMER | TDF_SHOW_PROGRESS_BAR) : 0);
+    tc.pszWindowTitle = kAppName;
+    tc.pszMainIcon = ng ? TD_WARNING_ICON : TD_INFORMATION_ICON;
+    tc.pszMainInstruction = title.c_str();
+    tc.pszContent = content.c_str();
+    tc.pszFooter = footer.c_str();
+    tc.cButtons = 2;
+    tc.pButtons = btns;
+    tc.nDefaultButton = kBtnRestartCancel;  // Enter をうっかり押しても再起動しない（秒読みは続かない＝取りやめ）
+    tc.pfCallback = RestartPromptCallback;
+    tc.lpCallbackData = reinterpret_cast<LONG_PTR>(&rp);
+    int button = 0;
+    if (FAILED(TaskDialogIndirect(&tc, &button, nullptr, nullptr))) return;
+    if (button != kBtnRestartNow) {
+        SetSummaryText(L"再起動を取りやめました。再起動のあとに効く設定があります。都合のよいときに再起動してください。", kMuted);
+        return;
+    }
+    if (!RebootNow()) {
+        MessageBoxW(g.hwnd, L"再起動を始められませんでした。スタート →「電源」→「再起動」で再起動してください。", kAppName, MB_OK | MB_ICONWARNING);
+    }
+}
+
+void FinishElevated(JobResult* res, const std::wstring& tsv, const std::wstring& log, const ElevatedText& t, bool restartPrompt = false) {
     g.applying = false;
     SetBusy(false);
     g.applyNote.clear();
@@ -1006,11 +1128,13 @@ void FinishElevated(JobResult* res, const std::wstring& tsv, const std::wstring&
                                std::to_wstring(failed) + total + L"）",
                            failed ? kNg : kAccent});
     g.applyNote.push_back({L"　｜　点検：", kMuted});
-    if (failed) {
+    StartInspection(true);
+    if (restartPrompt) {
+        ShowResultAndRestart(results, log);  // そろえる・まとめて実行：結果と再起動の秒読み（失敗の一覧もここに出す）
+    } else if (failed) {
         MessageBoxW(g.hwnd, (std::wstring(t.failTitle) + L"\n\n" + failText + L"\n記録：" + log).c_str(), kAppName,
                     MB_OK | MB_ICONWARNING);
     }
-    StartInspection(true);
 }
 
 void NotePrintersResult(const std::wstring& tsv);  // 後で定義
@@ -1025,7 +1149,8 @@ void FinishApply(JobResult* res) {
         L"そろえられなかった項目があります。",
     };
     NotePrintersResult(g.applyTsv);  // プリンターが入らなかったら、その設定の版を覚える
-    FinishElevated(res, g.applyTsv, g.applyLog, t);
+    NoteProfileUsed(g.applyTsv);     // このプロファイルでそろえた
+    FinishElevated(res, g.applyTsv, g.applyLog, t, true);  // 結果と再起動の秒読みを出す
 }
 
 // ---------------------------------------------------------------- 前の受講生の履歴を消す（管理者として）
@@ -1771,8 +1896,9 @@ void RefreshResultsView() {
 void ApplyProfileToggles() {
     RefreshInstalled();
     std::wstring p = SelectedProfilePath();
-    g.toggleOn[0] = (ReadJsonString(p, L"office") == L"install");
-    g.toggleOn[1] = (ReadJsonString(p, L"adobe") == L"install");
+    // すでに入っているものは、プロファイルで「入れない」でもオンにする（＝消さずに残す。v0.20.10。消すときは手でオフにする）
+    g.toggleOn[0] = (ReadJsonString(p, L"office") == L"install") || g.installed[0];
+    g.toggleOn[1] = (ReadJsonString(p, L"adobe") == L"install") || g.installed[1];
     g.appsAvailable = !ReadJsonString(p, L"ownAppsManifest").empty();
     g.toggleOn[2] = false;  // 独自アプリは初めはオフ（独自アプリのタブから入れるのが基本。淳さんの指定）
     {
@@ -2392,6 +2518,7 @@ void StartDeploy(bool scheduled, const std::vector<std::wstring>* onlyApps = nul
 void StartOneClick() {
     if (g.running) return;
     if (!ConfirmWindowsUpdate()) return;
+    if (!ConfirmProfileSwitch()) return;
     std::wstring script = g.exeDir + L"\\scripts\\oneclick.ps1";
     if (!FileExists(script)) {
         MessageBoxW(g.hwnd, (L"まとめて実行の部品が見つかりません。\n\n" + script).c_str(), kAppName, MB_OK | MB_ICONWARNING);
@@ -2614,8 +2741,9 @@ void FinishDeploy(JobResult* res) {
     };
     const bool wasOneClick = g.oneClick;
     if (wasOneClick) NotePrintersResult(g.deployTsv);  // まとめて実行（設定をそろえるを含む）の結果
+    if (wasOneClick) NoteProfileUsed(g.deployTsv);
     g.oneClick = false;
-    FinishElevated(res, g.deployTsv, g.deployLog, wasOneClick ? t1 : t);
+    FinishElevated(res, g.deployTsv, g.deployLog, wasOneClick ? t1 : t, wasOneClick);  // まとめて実行のときは、結果と再起動の秒読み
     AfterDeployForApps();
 }
 

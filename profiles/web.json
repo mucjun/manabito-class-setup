@@ -13,6 +13,7 @@
   "quickAccessHistory": "hide",
   "startAppsList": "hide",
   "startAllAppsView": "category",
+  "adobeStartup": "on",
   "healthDiskMinGB": 10,
   "healthClockMaxSec": 120,
   "healthBatteryMinPct": 60,

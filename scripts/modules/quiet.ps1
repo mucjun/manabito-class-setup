@@ -178,3 +178,101 @@ function Set-StartAllAppsView {
     }
     return New-Row 'startview' $name 'DONE' $before.Current $before.Expected '次にスタートを開いたときから変わります。'
 }
+
+# ---- Adobe CC を起動時に動かさない（v0.20.11。淳さんの要望：起動するまで常駐させない）
+# タスク マネージャーの「スタートアップ アプリ」で「無効」にするのと同じ仕組み（StartupApproved に 03 で始まる値）。Run の登録そのものは消さない（元に戻せる）。
+# Adobe のアプリを更新すると Run が書き戻されることがあるので、［設定をそろえる］で毎回そろえ直す。
+# Adobe Update Service は「手動」に（必要なときだけ動く）。Adobe Genuine Service（正規品の確認）は止めない（止めるとアプリが正しく動かないおそれ）。
+$script:RunPlaces = @(
+    @{ Run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; Approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' },
+    @{ Run = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'; Approved = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' },
+    @{ Run = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'; Approved = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32' }
+)
+
+# Adobe の起動時の登録：@{ Name; Approved; Disabled(bool) } の一覧
+function Get-AdobeStartupEntries {
+    $list = @()
+    foreach ($pl in $script:RunPlaces) {
+        if (-not (Test-Path -LiteralPath $pl.Run)) { continue }
+        $key = Get-Item -LiteralPath $pl.Run -ErrorAction SilentlyContinue
+        if (-not $key) { continue }
+        foreach ($n in @($key.GetValueNames())) {
+            $data = [string]$key.GetValue($n, '')
+            if (-not (($n -match 'Adobe|Creative Cloud|CCXProcess|CoreSync') -or ($data -match '\\Adobe\\'))) { continue }
+            $disabled = $false
+            try {
+                $b = (Get-ItemProperty -LiteralPath $pl.Approved -Name $n -ErrorAction Stop).$n
+                if ($b -is [byte[]] -and $b.Length -ge 1 -and ($b[0] -band 1)) { $disabled = $true }   # 03（無効）・01 など奇数が無効、02・06 が有効
+            } catch { }
+            $list += @{ Name = $n; Approved = $pl.Approved; Disabled = $disabled }
+        }
+    }
+    return ,$list
+}
+
+function Get-AdobeUpdateServiceStart {
+    $svc = Get-Service -Name 'AdobeUpdateService' -ErrorAction SilentlyContinue
+    if (-not $svc) { return '' }
+    try { return [string](Get-CimInstance -ClassName Win32_Service -Filter "Name='AdobeUpdateService'" -ErrorAction Stop).StartMode } catch { return '' }
+}
+
+function Test-AdobeStartup {
+    param($Prof)
+    $name = 'Adobe CC の起動時の動き'
+    $want = [string](Get-Pref $Prof 'adobeStartup' 'off')
+    $e = Get-AdobeStartupEntries
+    $mode = Get-AdobeUpdateServiceStart
+    if ($e.Count -eq 0 -and -not $mode) { return New-Row 'adobestartup' $name 'NA' 'Adobe の起動時の登録なし' '' 'Adobe CC が入っていないか、起動時に動く登録がありません。' }
+    if ($want -eq 'on') {
+        # WEB系など：起動時に動かす（前に「動かさない」にしたものを戻す）
+        $off = @($e | Where-Object { $_.Disabled } | ForEach-Object { $_.Name })
+        $svcManual = ($mode -eq 'Manual')
+        $st = 'OK'; if ($off.Count -gt 0 -or $svcManual) { $st = 'NG' }
+        $c = '動かす'
+        if ($st -eq 'NG') { $parts = @(); if ($off.Count) { $parts += ('止めている：' + ($off -join '・')) }; if ($svcManual) { $parts += '更新のサービス：手動' }; $c = $parts -join '／' }
+        return New-Row 'adobestartup' $name $st $c '動かす' 'この講座では、PC の起動時に Creative Cloud が自動で立ち上がります。'
+    }
+    if ($want -ne 'off') { return New-Row 'adobestartup' $name 'NA' '' '変えない' '' }
+    $on = @($e | Where-Object { -not $_.Disabled } | ForEach-Object { $_.Name })
+    $svcAuto = ($mode -eq 'Auto')
+    $state = 'OK'; if ($on.Count -gt 0 -or $svcAuto) { $state = 'NG' }
+    $cur = '動かさない'
+    if ($state -eq 'NG') { $parts = @(); if ($on.Count) { $parts += ('起動時に動く：' + ($on -join '・')) }; if ($svcAuto) { $parts += '更新のサービス：自動' }; $cur = $parts -join '／' }
+    return New-Row 'adobestartup' $name $state $cur '動かさない' 'Photoshop などを開けば、必要な部品はそのとき起動します。Adobe のアプリの更新で登録が戻ることがあるので、［設定をそろえる］で毎回そろえ直します。'
+}
+
+function Set-AdobeStartup {
+    param($Prof)
+    $name = 'Adobe CC の起動時の動き'
+    $before = Test-AdobeStartup $Prof
+    if ($before.State -ne 'NG') { return New-Row 'adobestartup' $name 'SAME' $before.Current $before.Expected '' }
+    $failed = @()
+    if ([string](Get-Pref $Prof 'adobeStartup' 'off') -eq 'on') {
+        # 有効に戻す：タスク マネージャーで「有効」にしたときと同じ 02 で始まる 12 バイト
+        $enable = [byte[]](@(2, 0, 0, 0) + @(0, 0, 0, 0, 0, 0, 0, 0))
+        foreach ($e in @(Get-AdobeStartupEntries | Where-Object { $_.Disabled })) {
+            try { New-ItemProperty -LiteralPath $e.Approved -Name $e.Name -PropertyType Binary -Value $enable -Force -ErrorAction Stop | Out-Null } catch { $failed += $e.Name }
+        }
+        if ((Get-AdobeUpdateServiceStart) -eq 'Manual') {
+            try { Set-Service -Name 'AdobeUpdateService' -StartupType Automatic -ErrorAction Stop } catch { $failed += 'Adobe Update Service' }
+        }
+        if ($failed.Count) { return New-Row 'adobestartup' $name 'SKIP' $before.Current $before.Expected ('戻せなかったもの：' + ($failed -join '・') + '。タスク マネージャーの「スタートアップ アプリ」で「有効」にしてください。') }
+        return New-Row 'adobestartup' $name 'DONE' $before.Current $before.Expected '次に PC を起動したときから、Creative Cloud が自動で立ち上がります。'
+    }
+    # FILETIME（無効にした日時）を付けた 12 バイト：03 00 00 00 + 8 バイト
+    $stamp = [BitConverter]::GetBytes([DateTime]::UtcNow.ToFileTimeUtc())
+    $value = [byte[]](@(3, 0, 0, 0) + $stamp)
+    foreach ($e in @(Get-AdobeStartupEntries | Where-Object { -not $_.Disabled })) {
+        try {
+            if (-not (Test-Path -LiteralPath $e.Approved)) { New-Item -Path $e.Approved -Force | Out-Null }
+            New-ItemProperty -LiteralPath $e.Approved -Name $e.Name -PropertyType Binary -Value $value -Force -ErrorAction Stop | Out-Null
+        } catch { $failed += $e.Name }
+    }
+    if ((Get-AdobeUpdateServiceStart) -eq 'Auto') {
+        try { Set-Service -Name 'AdobeUpdateService' -StartupType Manual -ErrorAction Stop } catch { $failed += 'Adobe Update Service' }
+    }
+    if ($failed.Count) {
+        return New-Row 'adobestartup' $name 'SKIP' $before.Current $before.Expected ('変えられなかったもの：' + ($failed -join '・') + '。タスク マネージャーの「スタートアップ アプリ」で、Adobe のものを「無効」にしてください。')
+    }
+    return New-Row 'adobestartup' $name 'DONE' $before.Current $before.Expected '次に PC を起動したときから、Adobe CC は自動で起動しません（タスク マネージャーの「スタートアップ アプリ」で「無効」と同じ）。'
+}

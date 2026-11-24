@@ -69,7 +69,7 @@ const body = [];
 body.push(new Paragraph({ spacing: { before: 2400 }, alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'まなびと講習準備', font: FONT, size: 64, bold: true, color: NAVY })] }));
 body.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 240 }, children: [new TextRun({ text: '使い方マニュアル', font: FONT, size: 40, color: NAVY })] }));
 body.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 600 }, children: [new TextRun({ text: '教室・研修の PC を講習用に整え、前の受講生の履歴を消すためのツール', font: FONT, size: 24 })] }));
-body.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 1800 }, children: [new TextRun({ text: '対象の版：v0.20.9 以降（図入り版）', font: FONT, size: 22 })] }));
+body.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 1800 }, children: [new TextRun({ text: '対象の版：v0.20.13 以降（図入り版）', font: FONT, size: 22 })] }));
 body.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'NPO 法人まなびとステーション', font: FONT, size: 22 })] }));
 body.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: '2026 年 11 月', font: FONT, size: 22 })] }));
 body.push(PB());
@@ -204,13 +204,23 @@ body.push(...Steps([
   '「講習プロファイル」で、講座の種類を選びます（例：事務系）。',
   '［**まとめて実行**］を押します。確認が出たら［はい］、管理者の確認が出たら［はい］を押します。',
   '終わるまで待ちます。Office などを入れるときは、30 分以上かかることがあります。',
-  '終わったら、**PC を再起動**します。再起動のあとに効く設定（PDF を開くアプリ・スタートメニューなど）があるためです。',
-  'もう一度起動して［**点検する**］を押し、「そろっていない」が無いかを確かめます。',
+  '終わると、「**OK ○件・NG ○件**」と「**再起動しますか？**」の画面が出ます。［**いますぐ再起動**］を押します。何もしないと、**5 分後に自動で再起動**します（再起動のあとに効く設定があるためです）。今は再起動したくないときは［再起動を取りやめる］を押します。',
+  '再起動のあと、もう一度起動して［**点検する**］を押し、「そろっていない」が無いかを確かめます。',
 ]));
 body.push(Box('ポイント', [
   'Windows Update の自動更新は止めますが、手で更新はできます。設定 →「Windows Update」→［更新プログラムのチェック］。',
   'まだ入っていない Windows の更新があるときは、［まとめて実行］の前に「先に更新する」を案内します。講習の準備の日に「更新 → 再起動 → まとめて実行」の順にすると、講習中に勝手に再起動しません。',
 ]));
+body.push(gap());
+body.push(H3('講座（プロファイル）を切り替えるとき'));
+body.push(P('前回と違う講座で［まとめて実行］や［設定をそろえる］を押すと、「**プロファイルを切り替えた場合、別のプロファイルで準備したアプリは残ります。サインイン情報や設定は消えます。**」と出ます。［OK］を押すと続けます。'));
+[
+  '前の講座で入れたアプリ（例：WEB系の Adobe CC・Figma・Local・VS Code）は、**消さずに残します**。次にその講座をするとき、入れ直さずに済みます。',
+  'サインインの情報と、前の受講生が変えたアプリの設定は、［履歴を消す］で消えます。',
+  'アプリを消したいときは、「時間のかかる準備」のスイッチ（Office・Adobe CC）をオフにしてから［まとめて実行］を押すか、Windows の「設定」→「アプリ」から削除します。',
+].forEach(t => body.push(B(t)));
+body.push(gap());
+body.push(Box('注意', ['再起動の秒読みの間に、Word などで作業中のファイルがあれば保存してください。保存していないファイルがあるアプリは、再起動のときに Windows が「保存しますか」と聞きます。', '先生用の窓を開いている PC では、自動では再起動しません。']));
 body.push(gap());
 body.push(H2('4-2. 授業のファイルを受け取る'));
 body.push(P('先生の PC が授業のファイルを配っていると、受講生の PC のツールに「授業ファイルを取得しますか」と出ます。'));
@@ -251,6 +261,7 @@ body.push(H2('5-2. 消すもの'));
   'Microsoft アカウント・Office・Adobe などのサインイン、保存されたログイン情報（NAS などネットワークの情報は残します）',
   'クリップボードの履歴など',
   'Local（WordPress）で作ったサイト（「Local Sites」フォルダーの中身）。持ち帰るサイトは、講習の最後に Local の「Export」で書き出してもらいます',
+  '前の受講生が変えたアプリの設定（Word の標準テンプレート、Office のリボンの変更、Excel の起動時に開くファイル、Adobe CC のアプリの設定、Acrobat Reader・Paint.NET の最近使ったファイルなど。Figma・Local・VS Code は設定ごと）。アプリが開いていると消せないので、閉じてから行います',
 ].forEach(t => body.push(B(t)));
 body.push(gap());
 body.push(Box('注意', [
@@ -324,6 +335,7 @@ body.push(Box('ポイント', [
   '**Figma** は、使うときに Figma のアカウントでサインインします（無料のアカウントで使えます）。PC 全体に入れる版なので、自動では更新されません。講座の前に「Figma を新しくしてください」と出たら、担当者に知らせてください。',
   '**Local**（WordPress を PC の中で動かすアプリ）は、サイトを作るときに管理者の確認が出ます。［はい］を押してください。',
   '［履歴を消す］で、Figma と Local のサインインと設定も消します。',
+  '**Adobe Creative Cloud** は、基準・事務系では PC の起動時に自動で起動しないようにしています（サインインを求める画面が勝手に出ないように）。使うときは、Photoshop などのアプリを開くか、スタートから「Adobe Creative Cloud」を開きます。**WEB系では、自動で立ち上がります**。',
 ]));
 body.push(gap());
 body.push(H2('7-1. プロファイルを変える・作る'));

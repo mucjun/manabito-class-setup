@@ -232,3 +232,13 @@ function Test-LocalSites {
     $state = 'OK'; if ($n -gt 0) { $state = 'NG' }
     return New-Row 'localsites' $name $state ('{0} 個' -f $n) '空' ($p + ' ※ 前の受講生が作った WordPress のサイト。［履歴を消す］で消します。')
 }
+
+function Test-AppSettings {
+    param($Prof)
+    $name = 'アプリの設定（前の受講生が変えたもの）'
+    $items = Get-AppSettingItems
+    $apps = @($items | ForEach-Object { $_.App } | Select-Object -Unique)
+    $state = 'OK'; if ($items.Count -gt 0) { $state = 'NG' }
+    $cur = 'なし'; if ($items.Count -gt 0) { $cur = ($apps -join '・') }
+    return New-Row 'appsettings' $name $state $cur 'なし' 'Word の標準テンプレート（Normal.dotm）、Office のリボンの変更、Excel の起動時に開くファイル、Adobe CC のアプリの設定、Acrobat Reader の最近使ったファイル、Paint.NET の設定。［履歴を消す］で消すと、アプリが初めの状態で作り直します。'
+}
